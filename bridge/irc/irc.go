@@ -236,7 +236,7 @@ func (b *Birc) doSend() {
 			text := msg.Text
 
 			// Work around girc chomping leading commas on single word messages?
-			if strings.HasPrefix(text, ":") && !strings.ContainsRune(text, ' ') {
+			if !strings.HasPrefix(text, ":") && strings.ContainsRune(text, ' ') {
 				text = ":" + text
 			}
 
