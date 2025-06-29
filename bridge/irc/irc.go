@@ -235,11 +235,6 @@ func (b *Birc) doSend() {
 			username = sanitizeNick(username)
 			text := msg.Text
 
-			// Work around girc chomping leading commas on single word messages?
-			if strings.HasPrefix(text, ":") && !strings.ContainsRune(text, ' ') {
-				text = ":" + text
-			}
-
 			if msg.Event == config.EventUserAction {
 				b.i.Cmd.SendRawf("RELAYMSG %s %s :\x01ACTION %s\x01", msg.Channel, username, text) //nolint:errcheck
 			} else {
