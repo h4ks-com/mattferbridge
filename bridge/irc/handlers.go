@@ -81,32 +81,72 @@ func (b *Birc) handleInvite(client *girc.Client, event girc.Event) {
 }
 
 func (b *Birc) handleJoinPart(client *girc.Client, event girc.Event) {
+	username := event.Source.Name
+	
+	// Handle QUIT events specially - they affect all channels the user was in
+	if event.Command == "QUIT" {
+		if username == b.Nick && strings.Contains(event.Last(), "Ping timeout") {
+			b.Log.Infof("%s reconnecting ..", b.Account)
+			b.Remote <- config.Message{Username: "system", Text: "reconnect", Channel: "", Account: b.Account, Event: config.EventFailure}
+			return
+		}
+		
+		// For other users quitting, generate EventJoinLeave for each channel they were in
+		if username != b.Nick && !b.GetBool("nosendjoinpart") {
+			for channel := range b.channelUsers {
+				if users, exists := b.channelUsers[channel]; exists {
+					if _, userInChannel := users[username]; userInChannel {
+						// Remove user from channel tracking
+						delete(users, username)
+						
+						// Send quit event as a "part" for this channel
+						msg := config.Message{
+							Username: "system", 
+							Text: username + " quits", 
+							Channel: channel, 
+							Account: b.Account, 
+							Event: config.EventJoinLeave,
+						}
+						if b.GetBool("verbosejoinpart") {
+							msg.Text = username + " (" + event.Source.Ident + "@" + event.Source.Host + ") quits"
+							b.Log.Debugf("<= Sending verbose QUIT event for %s from %s to gateway", username, b.Account)
+						} else {
+							b.Log.Debugf("<= Sending QUIT event for %s from %s to gateway", username, b.Account)
+						}
+						b.Log.Debugf("<= Message is %#v", msg)
+						b.Remote <- msg
+					}
+				}
+			}
+		}
+		return
+	}
+	
+	// Handle regular JOIN/PART/KICK events that have a specific channel
 	if len(event.Params) == 0 {
 		b.Log.Debugf("handleJoinPart: empty Params? %#v", event)
 		return
 	}
 	channel := strings.ToLower(event.Params[0])
+	
 	if event.Command == "KICK" && event.Params[1] == b.Nick {
 		b.Log.Infof("Got kicked from %s by %s", channel, event.Source.Name)
 		time.Sleep(time.Duration(b.GetInt("RejoinDelay")) * time.Second)
 		b.Remote <- config.Message{Username: "system", Text: "rejoin", Channel: channel, Account: b.Account, Event: config.EventRejoinChannels}
 		return
 	}
-	if event.Command == "QUIT" {
-		if event.Source.Name == b.Nick && strings.Contains(event.Last(), "Ping timeout") {
-			b.Log.Infof("%s reconnecting ..", b.Account)
-			b.Remote <- config.Message{Username: "system", Text: "reconnect", Channel: channel, Account: b.Account, Event: config.EventFailure}
-			return
-		}
-	}
-	if event.Source.Name != b.Nick {
+	
+	// Track user channel membership
+	b.trackUserInChannel(username, channel, event.Command)
+	
+	if username != b.Nick {
 		if b.GetBool("nosendjoinpart") {
 			return
 		}
-		msg := config.Message{Username: "system", Text: event.Source.Name + " " + strings.ToLower(event.Command) + "s", Channel: channel, Account: b.Account, Event: config.EventJoinLeave}
+		msg := config.Message{Username: "system", Text: username + " " + strings.ToLower(event.Command) + "s", Channel: channel, Account: b.Account, Event: config.EventJoinLeave}
 		if b.GetBool("verbosejoinpart") {
 			b.Log.Debugf("<= Sending verbose JOIN_LEAVE event from %s to gateway", b.Account)
-			msg = config.Message{Username: "system", Text: event.Source.Name + " (" + event.Source.Ident + "@" + event.Source.Host + ") " + strings.ToLower(event.Command) + "s", Channel: channel, Account: b.Account, Event: config.EventJoinLeave}
+			msg = config.Message{Username: "system", Text: username + " (" + event.Source.Ident + "@" + event.Source.Host + ") " + strings.ToLower(event.Command) + "s", Channel: channel, Account: b.Account, Event: config.EventJoinLeave}
 		} else {
 			b.Log.Debugf("<= Sending JOIN_LEAVE event from %s to gateway", b.Account)
 		}
@@ -276,4 +316,20 @@ func (b *Birc) handleTopicWhoTime(client *girc.Client, event girc.Event) {
 		user += " [" + parts[1] + "]"
 	}
 	b.Log.Debugf("%s: Topic set by %s [%s]", event.Command, user, time.Unix(t, 0))
+}
+
+// trackUserInChannel tracks users joining/leaving channels for QUIT event handling
+func (b *Birc) trackUserInChannel(username, channel, command string) {
+	if b.channelUsers[channel] == nil {
+		b.channelUsers[channel] = make(map[string]bool)
+	}
+	
+	switch command {
+	case "JOIN":
+		b.channelUsers[channel][username] = true
+		b.Log.Debugf("Tracking user %s joining channel %s", username, channel)
+	case "PART", "KICK":
+		delete(b.channelUsers[channel], username)
+		b.Log.Debugf("Tracking user %s leaving channel %s", username, channel)
+	}
 }

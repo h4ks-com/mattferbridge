@@ -27,6 +27,7 @@ type Birc struct {
 	i                                         *girc.Client
 	Nick                                      string
 	names                                     map[string][]string
+	channelUsers                              map[string]map[string]bool // channel -> users in that channel
 	connected                                 chan error
 	Local                                     chan config.Message // local queue for flood control
 	FirstConnection, authDone                 bool
@@ -41,6 +42,7 @@ func New(cfg *bridge.Config) bridge.Bridger {
 	b.Config = cfg
 	b.Nick = b.GetString("Nick")
 	b.names = make(map[string][]string)
+	b.channelUsers = make(map[string]map[string]bool)
 	b.connected = make(chan error)
 	b.channels = make(map[string]bool)
 
