@@ -1,0 +1,13 @@
+Welcome to SSH Chat Test Server!
+
+This is a local development environment for testing matterbridge.
+Messages sent here will be bridged to the IRC channel #bridge-test.
+
+Available commands:
+  /help     - Show help
+  /list     - List users
+  /me <msg> - Send action message
+  /nick <name> - Change nickname
+  /quit     - Disconnect
+
+Have fun testing!

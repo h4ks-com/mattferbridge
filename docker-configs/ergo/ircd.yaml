@@ -1,0 +1,52 @@
+# Ergo IRC daemon configuration - Simple non-TLS setup
+
+network:
+    name: TestNet
+
+server:
+    name: irc.testnet.local
+    listeners:
+        ":6667":
+    motd: |
+        Welcome to TestNet IRC!
+        This is a test server for matterbridge development.
+        Join #bridge-test to test the bridge!
+    
+    enforce-utf8: true
+    log-level: info
+    max-sendq: 1M
+
+datastore:
+    path: /ircd/ircd.db
+
+accounts:
+    registration:
+        enabled: true
+        allow-before-connect: true
+        throttling:
+            enabled: false
+    authentication-enabled: false
+    require-sasl:
+        enabled: false
+    nick-reservation:
+        enabled: false
+    multiclient:
+        enabled: false
+
+channels:
+    default-modes: +nt
+    max-channels-per-client: 100
+    registration:
+        enabled: false
+
+limits:
+    nicklen: 32
+    channellen: 64
+    awaylen: 390
+    kicklen: 390
+    topiclen: 390
+
+history:
+    enabled: true
+    channel-length: 100
+    client-length: 50
