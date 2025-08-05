@@ -1,0 +1,51 @@
+# Matterbridge configuration for local testing
+# Bridges between Ergo IRC and sshchat
+
+###################################################################
+# IRC section (Ergo)
+###################################################################
+[irc]
+
+[irc.local]
+Server="ergo:6667"
+UseTLS=false
+SkipTLSVerify=true
+Nick="bridge-bot"
+RealName="Matterbridge Bot"
+UserName="bridge"
+MessageDelay=1000
+RemoteNickFormat="<{NICK}> "
+ShowJoinPart=true
+VerboseJoinPart=true
+
+###################################################################
+# sshchat section
+###################################################################
+[sshchat]
+
+[sshchat.local]
+Server="sshchat:2022"
+Nick="bridge-bot"
+RemoteNickFormat="<{NICK}> "
+ShowJoinPart=true
+
+###################################################################
+# General configuration
+###################################################################
+[general]
+RemoteNickFormat="[{PROTOCOL}] <{NICK}> "
+
+###################################################################
+# Gateway configuration
+###################################################################
+[[gateway]]
+name="test-bridge"
+enable=true
+
+    [[gateway.inout]]
+    account="irc.local"
+    channel="#bridge-test"
+
+    [[gateway.inout]]
+    account="sshchat.local"
+    channel="sshchat"

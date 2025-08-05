@@ -1,0 +1,19 @@
+[project]
+name = "docker-tests"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Matheus Fillipe", email = "matheusfillipeag@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "asyncssh>=2.21.0",
+]
+
+[project.scripts]
+docker-tests = "docker_tests:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
