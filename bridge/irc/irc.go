@@ -163,6 +163,11 @@ func (b *Birc) Send(msg config.Message) (string, error) {
 		return "", err
 	}
 
+	// Format action messages with asterisks
+	if msg.Event == config.EventUserAction {
+		msg.Text = "*" + msg.Text + "*"
+	}
+
 	// handle files, return if we're done here
 	if ok := b.handleFiles(&msg); ok {
 		return "", nil

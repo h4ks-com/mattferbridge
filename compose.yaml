@@ -18,7 +18,14 @@ services:
     volumes:
       - ./docker-configs/sshchat:/data
       - ~/.ssh:/root/.ssh:ro
-    command: ["./ssh-chat/ssh-chat", "--bind", "0.0.0.0:2022", "--motd", "/data/motd.txt"]
+    command:
+      [
+        "./ssh-chat/ssh-chat",
+        "--bind",
+        "0.0.0.0:2022",
+        "--motd",
+        "/data/motd.txt",
+      ]
     restart: unless-stopped
     networks:
       - bridgenet

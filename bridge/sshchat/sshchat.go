@@ -3,6 +3,7 @@ package bsshchat
 import (
 	"bufio"
 	"io"
+	"regexp"
 	"strings"
 
 	"github.com/42wim/matterbridge/bridge"
@@ -69,18 +70,45 @@ func (b *Bsshchat) Send(msg config.Message) (string, error) {
 	if msg.Event == config.EventMsgDelete {
 		return "", nil
 	}
-	b.Log.Debugf("=> Receiving %#v", msg)
+	if b.GetBool("Debug") {
+		b.Log.Debugf("=> Receiving %#v", msg)
+	}
 	if msg.Extra != nil {
 		for _, rmsg := range helper.HandleExtra(&msg, b.General) {
-			if _, err := b.w.Write([]byte(rmsg.Username + rmsg.Text + "\r\n")); err != nil {
-				b.Log.Errorf("Could not send extra message: %#v", err)
+			// Format actions with asterisks for extra messages
+			if rmsg.Event == config.EventUserAction {
+				originalNick := b.extractOriginalNick(rmsg.Username)
+				text := originalNick + " *" + rmsg.Text + "*"
+				if _, err := b.w.Write([]byte(text + "\r\n")); err != nil {
+					b.Log.Errorf("Could not send extra action message: %#v", err)
+				}
+			} else {
+				if _, err := b.w.Write([]byte(rmsg.Username + rmsg.Text + "\r\n")); err != nil {
+					b.Log.Errorf("Could not send extra message: %#v", err)
+				}
 			}
 		}
 		if len(msg.Extra["file"]) > 0 {
 			return b.handleUploadFile(&msg)
 		}
 	}
-	_, err := b.w.Write([]byte(msg.Username + msg.Text + "\r\n"))
+
+	// Format main message based on event type
+	var messageText string
+	if msg.Event == config.EventUserAction {
+		// Extract original nickname for action formatting
+		originalNick := b.extractOriginalNick(msg.Username)
+		// Format action messages with asterisks around action only: username *action*
+		messageText = originalNick + " *" + msg.Text + "*"
+		if b.GetBool("Debug") {
+			b.Log.Debugf("=> Sending action message: %s (original nick: %s)", messageText, originalNick)
+		}
+	} else {
+		// Regular message format: username message
+		messageText = msg.Username + msg.Text
+	}
+
+	_, err := b.w.Write([]byte(messageText + "\r\n"))
 	return "", err
 }
 
@@ -123,26 +151,103 @@ func (b *Bsshchat) handleSSHChat() error {
 	wait := true
 	for {
 		if b.r.Scan() {
+			if b.GetBool("Debug") {
+				b.Log.Debugf("Raw SSH chat line: %q", b.r.Text())
+			}
 			// ignore messages from ourselves
 			if !strings.Contains(b.r.Text(), "\033[K") {
+				if b.GetBool("Debug") {
+					b.Log.Debugf("Skipping line without \\033[K")
+				}
 				continue
 			}
 			if strings.Contains(b.r.Text(), "Rate limiting is in effect") {
 				continue
 			}
+
 			// skip our own messages
-			if !strings.HasPrefix(b.r.Text(), "["+b.GetString("Nick")+"] \x1b") {
+			botPrefix := "[" + b.GetString("Nick") + "] \x1b"
+			if strings.HasPrefix(b.r.Text(), botPrefix) {
+
+				// Check if this is an action message: "\x1b[K** username action"
+				if strings.Contains(b.r.Text(), "\x1b[K** ") {
+					actionStart := strings.Index(b.r.Text(), "\x1b[K** ")
+					if actionStart != -1 {
+						actionPart := b.r.Text()[actionStart+6:] // Skip "\x1b[K** "
+						actionPart = strings.TrimSuffix(actionPart, "\r")
+						parts := strings.SplitN(actionPart, " ", 2)
+						if len(parts) >= 2 {
+							username := parts[0]
+							actionText := parts[1]
+							rmsg := config.Message{
+								Username: username,
+								Text:     actionText,
+								Channel:  "sshchat",
+								Account:  b.Account,
+								UserID:   "nick",
+								Event:    config.EventUserAction,
+							}
+							if b.GetBool("Debug") {
+								b.Log.Debugf("Detected SSH action from %s: %s", username, actionText)
+							}
+							b.Remote <- rmsg
+							continue
+						}
+					}
+				}
+
+				// Check if this is a regular user message: "\x1b[...D\x1b[Kusername: message"
+				if strings.Contains(b.r.Text(), "\x1b[K") {
+					kIndex := strings.Index(b.r.Text(), "\x1b[K")
+					if kIndex != -1 {
+						messagePart := b.r.Text()[kIndex+3:] // Skip "\x1b[K"
+						messagePart = strings.TrimSuffix(messagePart, "\r")
+
+						// Parse "username: message" format
+						if strings.Contains(messagePart, ": ") {
+							colonIndex := strings.Index(messagePart, ": ")
+							username := messagePart[:colonIndex]
+							messageText := messagePart[colonIndex+2:]
+
+							// Skip system messages and our own messages
+							if username != "system" && username != b.GetString("Nick") {
+								rmsg := config.Message{
+									Username: username,
+									Text:     messageText,
+									Channel:  "sshchat",
+									Account:  b.Account,
+									UserID:   "nick",
+								}
+								b.Remote <- rmsg
+								continue
+							} else {
+							}
+						}
+					}
+				}
+
+				// Skip all other messages from our bot
 				continue
 			}
 			res := strings.Split(stripPrompt(b.r.Text()), ":")
 			if res[0] == "-> Set theme" {
 				wait = false
-				b.Log.Debugf("mono found, allowing")
+				if b.GetBool("Debug") {
+					b.Log.Debugf("mono found, allowing")
+				}
 				continue
 			}
 			if !wait {
-				b.Log.Debugf("<= Message %#v", res)
-				rmsg := config.Message{Username: res[0], Text: strings.TrimSpace(strings.Join(res[1:], ":")), Channel: "sshchat", Account: b.Account, UserID: "nick"}
+				if b.GetBool("Debug") {
+					b.Log.Debugf("<= Message %#v", res)
+				}
+
+				// Regular message parsing (legacy fallback)
+				messageText := strings.TrimSpace(strings.Join(res[1:], ":"))
+
+				// Create the message with default values
+				rmsg := config.Message{Username: res[0], Text: messageText, Channel: "sshchat", Account: b.Account, UserID: "nick"}
+
 				b.Remote <- rmsg
 			}
 		}
@@ -166,4 +271,18 @@ func (b *Bsshchat) handleUploadFile(msg *config.Message) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// extractOriginalNick attempts to extract the original nickname from RemoteNickFormat
+func (b *Bsshchat) extractOriginalNick(formattedUsername string) string {
+	// Try to extract nick from common RemoteNickFormat patterns like "<nick>", "[PROTOCOL] <nick>", etc.
+	// First try angle brackets: <nick>
+	re := regexp.MustCompile(`<([^>]+)>`)
+	matches := re.FindStringSubmatch(formattedUsername)
+	if len(matches) > 1 {
+		return matches[1]
+	}
+
+	// If no pattern matches, return the formatted username as-is
+	return formattedUsername
 }
