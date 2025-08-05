@@ -1,6 +1,6 @@
 # Matterbridge Test Suite
 
-Python test scripts for testing matterbridge IRC ” SSH Chat bridging functionality.
+Python test scripts for testing matterbridge IRC ï¿½ SSH Chat bridging functionality.
 
 ## Setup
 
@@ -44,16 +44,29 @@ IRC QUIT messages should be converted to part events that show up in SSH Chat as
    docker compose up -d
    ```
 
-2. Run the test from the docker-tests directory:
-   ```bash
-   cd docker-tests
-   uv run src/docker_tests/test_bridge.py
-   ```
+### Available Tests
 
-3. Alternative: Run as a module:
-   ```bash
-   uv run -m docker_tests.test_bridge
-   ```
+#### Bridge Connectivity Test
+Tests basic message bridging and QUIT detection:
+
+```bash
+cd docker-tests
+uv run src/docker_tests/test_bridge.py
+```
+
+#### Emote Handling Test  
+Tests IRC CTCP ACTION and SSH /me command formatting:
+
+```bash
+cd docker-tests
+uv run src/docker_tests/test_emotes.py
+```
+
+### Alternative: Run as modules
+```bash
+uv run -m docker_tests.test_bridge
+uv run -m docker_tests.test_emotes
+```
 
 ## Test Output
 
