@@ -45,7 +45,7 @@ func (b *Birc) handleFiles(msg *config.Message) bool {
 		return false
 	}
 	for _, rmsg := range helper.HandleExtra(msg, b.General) {
-		b.Local <- rmsg
+		b.Local <- localMsg{msg: rmsg, resultCh: make(chan string, 1)}
 	}
 	if len(msg.Extra["file"]) == 0 {
 		return false
@@ -61,7 +61,7 @@ func (b *Birc) handleFiles(msg *config.Message) bool {
 				msg.Text = fi.Comment + " : " + fi.URL
 			}
 		}
-		b.Local <- config.Message{Text: msg.Text, Username: msg.Username, Channel: msg.Channel, Event: msg.Event}
+		b.Local <- localMsg{msg: config.Message{Text: msg.Text, Username: msg.Username, Channel: msg.Channel, Event: msg.Event}, resultCh: make(chan string, 1)}
 	}
 	return true
 }
@@ -82,7 +82,7 @@ func (b *Birc) handleInvite(client *girc.Client, event girc.Event) {
 
 func (b *Birc) handleJoinPart(client *girc.Client, event girc.Event) {
 	username := event.Source.Name
-	
+
 	// Handle QUIT events specially - they affect all channels the user was in
 	if event.Command == "QUIT" {
 		if username == b.Nick && strings.Contains(event.Last(), "Ping timeout") {
@@ -90,7 +90,7 @@ func (b *Birc) handleJoinPart(client *girc.Client, event girc.Event) {
 			b.Remote <- config.Message{Username: "system", Text: "reconnect", Channel: "", Account: b.Account, Event: config.EventFailure}
 			return
 		}
-		
+
 		// For other users quitting, generate EventJoinLeave for each channel they were in
 		if username != b.Nick && !b.GetBool("nosendjoinpart") {
 			for channel := range b.channelUsers {
@@ -98,14 +98,14 @@ func (b *Birc) handleJoinPart(client *girc.Client, event girc.Event) {
 					if _, userInChannel := users[username]; userInChannel {
 						// Remove user from channel tracking
 						delete(users, username)
-						
+
 						// Send quit event as a "part" for this channel
 						msg := config.Message{
-							Username: "system", 
-							Text: username + " quits", 
-							Channel: channel, 
-							Account: b.Account, 
-							Event: config.EventJoinLeave,
+							Username: "system",
+							Text:     username + " quits",
+							Channel:  channel,
+							Account:  b.Account,
+							Event:    config.EventJoinLeave,
 						}
 						if b.GetBool("verbosejoinpart") {
 							msg.Text = username + " (" + event.Source.Ident + "@" + event.Source.Host + ") quits"
@@ -121,24 +121,24 @@ func (b *Birc) handleJoinPart(client *girc.Client, event girc.Event) {
 		}
 		return
 	}
-	
+
 	// Handle regular JOIN/PART/KICK events that have a specific channel
 	if len(event.Params) == 0 {
 		b.Log.Debugf("handleJoinPart: empty Params? %#v", event)
 		return
 	}
 	channel := strings.ToLower(event.Params[0])
-	
+
 	if event.Command == "KICK" && event.Params[1] == b.Nick {
 		b.Log.Infof("Got kicked from %s by %s", channel, event.Source.Name)
 		time.Sleep(time.Duration(b.GetInt("RejoinDelay")) * time.Second)
 		b.Remote <- config.Message{Username: "system", Text: "rejoin", Channel: channel, Account: b.Account, Event: config.EventRejoinChannels}
 		return
 	}
-	
+
 	// Track user channel membership
 	b.trackUserInChannel(username, channel, event.Command)
-	
+
 	if username != b.Nick {
 		if b.GetBool("nosendjoinpart") {
 			return
@@ -206,6 +206,15 @@ func (b *Birc) handleNotice(client *girc.Client, event girc.Event) {
 }
 
 func (b *Birc) handleOther(client *girc.Client, event girc.Event) {
+	if event.Echo && (event.Command == "PRIVMSG" || event.Command == "NOTICE") {
+		if msgid, ok := event.Tags.Get("msgid"); ok {
+			select {
+			case b.echoMsgid <- msgid:
+			default:
+			}
+		}
+	}
+
 	if b.GetInt("DebugLevel") == 1 {
 		if event.Command != "CLIENT_STATE_UPDATED" &&
 			event.Command != "CLIENT_GENERAL_UPDATED" {
@@ -243,6 +252,18 @@ func (b *Birc) handlePrivMsg(client *girc.Client, event girc.Event) {
 	}
 
 	b.Log.Debugf("== Receiving PRIVMSG: %s %s %#v", event.Source.Name, event.Last(), event)
+
+	if b.GetBool("PreserveThreading") {
+		if msgid, ok := event.Tags.Get("msgid"); ok {
+			rmsg.ID = msgid
+		}
+
+		if replyTo, ok := event.Tags.Get("+reply"); ok {
+			rmsg.ParentID = replyTo
+		} else if replyTo, ok := event.Tags.Get("+draft/reply"); ok {
+			rmsg.ParentID = replyTo
+		}
+	}
 
 	// set action event
 	if ok, ctcp := event.IsCTCP(); ok {
@@ -323,7 +344,7 @@ func (b *Birc) trackUserInChannel(username, channel, command string) {
 	if b.channelUsers[channel] == nil {
 		b.channelUsers[channel] = make(map[string]bool)
 	}
-	
+
 	switch command {
 	case "JOIN":
 		b.channelUsers[channel][username] = true

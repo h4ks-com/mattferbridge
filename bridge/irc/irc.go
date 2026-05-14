@@ -23,16 +23,23 @@ import (
 	_ "github.com/paulrosania/go-charset/data"
 )
 
+type localMsg struct {
+	msg      config.Message
+	resultCh chan string
+}
+
 type Birc struct {
 	i                                         *girc.Client
 	Nick                                      string
 	names                                     map[string][]string
 	channelUsers                              map[string]map[string]bool // channel -> users in that channel
 	connected                                 chan error
-	Local                                     chan config.Message // local queue for flood control
+	Local                                     chan localMsg // local queue for flood control
 	FirstConnection, authDone                 bool
 	MessageDelay, MessageQueue, MessageLength int
 	channels                                  map[string]bool
+
+	echoMsgid chan string
 
 	*bridge.Config
 }
@@ -79,7 +86,8 @@ func (b *Birc) Connect() error {
 		return errors.New("you can't enable SASL and TLSClientCertificate at the same time")
 	}
 
-	b.Local = make(chan config.Message, b.MessageQueue+10)
+	b.Local = make(chan localMsg, b.MessageQueue+10)
+	b.echoMsgid = make(chan string, 1)
 	b.Log.Infof("Connecting %s", b.GetString("Server"))
 
 	i, err := b.getClient()
@@ -183,6 +191,7 @@ func (b *Birc) Send(msg config.Message) (string, error) {
 	} else {
 		msgLines = helper.GetSubLines(msg.Text, 0, b.GetString("MessageClipped"))
 	}
+	var lastMsgid string
 	for i := range msgLines {
 		if len(b.Local) >= b.MessageQueue {
 			b.Log.Debugf("flooding, dropping message (queue at %d)", len(b.Local))
@@ -190,9 +199,16 @@ func (b *Birc) Send(msg config.Message) (string, error) {
 		}
 
 		msg.Text = msgLines[i]
-		b.Local <- msg
+		resultCh := make(chan string, 1)
+		b.Local <- localMsg{msg: msg, resultCh: resultCh}
+
+		select {
+		case msgid := <-resultCh:
+			lastMsgid = msgid
+		case <-time.After(3 * time.Second):
+		}
 	}
-	return "", nil
+	return lastMsgid, nil
 }
 
 func (b *Birc) doConnect() {
@@ -228,25 +244,47 @@ func sanitizeNick(nick string) string {
 	return strings.Map(sanitize, nick)
 }
 
+// msgid is a tag (not a CAP) carried under message-tags, so we only check that.
+func (b *Birc) supportsReplyTags() bool {
+	return b.i.HasCapability("message-tags")
+}
+
 func (b *Birc) doSend() {
 	rate := time.Millisecond * time.Duration(b.MessageDelay)
 	throttle := time.NewTicker(rate)
-	for msg := range b.Local {
+	for lm := range b.Local {
 		<-throttle.C
+		msg := lm.msg
 		username := msg.Username
+
+		select {
+		case <-b.echoMsgid:
+		default:
+		}
+
+		useReplyTag := msg.ParentValid() && b.GetBool("PreserveThreading") && b.supportsReplyTags()
 		// Optional support for the proposed RELAYMSG extension, described at
 		// https://github.com/jlu5/ircv3-specifications/blob/master/extensions/relaymsg.md
 		// nolint:nestif
-		if (b.i.HasCapability("overdrivenetworks.com/relaymsg") || b.i.HasCapability("draft/relaymsg")) &&
-			b.GetBool("UseRelayMsg") {
-			username = sanitizeNick(username)
-			text := msg.Text
+		useRelayMsg := (b.i.HasCapability("overdrivenetworks.com/relaymsg") || b.i.HasCapability("draft/relaymsg")) &&
+			b.GetBool("UseRelayMsg")
 
-			if msg.Event == config.EventUserAction {
-				b.i.Cmd.SendRawf("RELAYMSG %s %s :\x01ACTION %s\x01", msg.Channel, username, text) //nolint:errcheck
+		if useRelayMsg {
+			username = sanitizeNick(username)
+			if useReplyTag {
+				if msg.Event == config.EventUserAction {
+					b.i.Cmd.SendRawf("@+draft/reply=%s RELAYMSG %s %s :\x01ACTION %s\x01", msg.ParentID, msg.Channel, username, msg.Text) //nolint:errcheck
+				} else {
+					b.Log.Debugf("Sending RELAYMSG with reply to channel %s: nick=%s, reply_to=%s", msg.Channel, username, msg.ParentID)
+					b.i.Cmd.SendRawf("@+draft/reply=%s RELAYMSG %s %s :%s", msg.ParentID, msg.Channel, username, msg.Text) //nolint:errcheck
+				}
 			} else {
-				b.Log.Debugf("Sending RELAYMSG to channel %s: nick=%s", msg.Channel, username)
-				b.i.Cmd.SendRawf("RELAYMSG %s %s :%s", msg.Channel, username, text) //nolint:errcheck
+				if msg.Event == config.EventUserAction {
+					b.i.Cmd.SendRawf("RELAYMSG %s %s :\x01ACTION %s\x01", msg.Channel, username, msg.Text) //nolint:errcheck
+				} else {
+					b.Log.Debugf("Sending RELAYMSG to channel %s: nick=%s", msg.Channel, username)
+					b.i.Cmd.SendRawf("RELAYMSG %s %s :%s", msg.Channel, username, msg.Text) //nolint:errcheck
+				}
 			}
 		} else {
 			if b.GetBool("Colornicks") {
@@ -254,16 +292,40 @@ func (b *Birc) doSend() {
 				colorCode := checksum%14 + 2 // quick fix - prevent white or black color codes
 				username = fmt.Sprintf("\x03%02d%s\x0F", colorCode, msg.Username)
 			}
-			switch msg.Event {
-			case config.EventUserAction:
-				b.i.Cmd.Action(msg.Channel, username+msg.Text)
-			case config.EventNoticeIRC:
-				b.Log.Debugf("Sending notice to channel %s", msg.Channel)
-				b.i.Cmd.Notice(msg.Channel, username+msg.Text)
-			default:
-				b.Log.Debugf("Sending to channel %s", msg.Channel)
-				b.i.Cmd.Message(msg.Channel, username+msg.Text)
+
+			if useReplyTag {
+				switch msg.Event {
+				case config.EventUserAction:
+					b.i.Cmd.SendRawf("@+draft/reply=%s PRIVMSG %s :\x01ACTION %s%s\x01", msg.ParentID, msg.Channel, username, msg.Text) //nolint:errcheck
+				case config.EventNoticeIRC:
+					b.Log.Debugf("Sending notice with reply to channel %s", msg.Channel)
+					b.i.Cmd.SendRawf("@+draft/reply=%s NOTICE %s :%s%s", msg.ParentID, msg.Channel, username, msg.Text) //nolint:errcheck
+				default:
+					b.Log.Debugf("Sending message with reply to channel %s, reply_to=%s", msg.Channel, msg.ParentID)
+					b.i.Cmd.SendRawf("@+draft/reply=%s PRIVMSG %s :%s%s", msg.ParentID, msg.Channel, username, msg.Text) //nolint:errcheck
+				}
+			} else {
+				switch msg.Event {
+				case config.EventUserAction:
+					b.i.Cmd.Action(msg.Channel, username+msg.Text)
+				case config.EventNoticeIRC:
+					b.Log.Debugf("Sending notice to channel %s", msg.Channel)
+					b.i.Cmd.Notice(msg.Channel, username+msg.Text)
+				default:
+					b.Log.Debugf("Sending to channel %s", msg.Channel)
+					b.i.Cmd.Message(msg.Channel, username+msg.Text)
+				}
 			}
+		}
+
+		var msgid string
+		select {
+		case msgid = <-b.echoMsgid:
+		case <-time.After(2 * time.Second):
+		}
+		select {
+		case lm.resultCh <- msgid:
+		default:
 		}
 	}
 }
@@ -324,9 +386,15 @@ func (b *Birc) getClient() (*girc.Client, error) {
 		TLSConfig:  tlsConfig,
 		PingDelay:  pingDelay,
 		// skip gIRC internal rate limiting, since we have our own throttling
-		AllowFlood:    true,
-		Debug:         debug,
-		SupportedCaps: map[string][]string{"overdrivenetworks.com/relaymsg": nil, "draft/relaymsg": nil},
+		AllowFlood: true,
+		Debug:      debug,
+		SupportedCaps: map[string][]string{
+			"overdrivenetworks.com/relaymsg": nil,
+			"draft/relaymsg":                 nil,
+			"message-tags":                   nil,
+			"echo-message":                   nil,
+			"server-time":                    nil,
+		},
 	})
 	return i, nil
 }

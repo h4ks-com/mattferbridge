@@ -6,6 +6,9 @@ services:
       - "6667:6667"
     volumes:
       - ./docker-configs/ergo:/ircd
+    # Skip the image's run.sh which calls `ergo mkcerts` and exits when no TLS
+    # listener is configured. We use plaintext :6667 only for local testing.
+    command: ["/ircd-bin/ergo", "run", "--conf", "/ircd/ircd.yaml"]
     restart: unless-stopped
     networks:
       - bridgenet
@@ -41,7 +44,7 @@ services:
     restart: unless-stopped
     networks:
       - bridgenet
-    command: ["-conf", "/etc/matterbridge/matterbridge.toml"]
+    command: ["-debug", "-conf", "/etc/matterbridge/matterbridge.toml"]
 
 networks:
   bridgenet:

@@ -154,17 +154,18 @@ func (r *Router) handleReceive() {
 				msgIDs = append(msgIDs, gw.handleMessage(&msg, br)...)
 			}
 
-			if msg.ID != "" {
-				_, exists := gw.Messages.Get(msg.Protocol + " " + msg.ID)
-
-				// Only add the message ID if it doesn't already exist
-				//
-				// For some bridges we always add/update the message ID.
-				// This is necessary as msgIDs will change if a bridge returns
-				// a different ID in response to edits.
-				if !exists {
-					gw.Messages.Add(msg.Protocol+" "+msg.ID, msgIDs)
+			// Synthesize a key for bridges without native message IDs (e.g. sshchat)
+			// so downstream msgids can still be reverse-looked-up by FindCanonicalMsgID.
+			cacheKey := msg.Protocol + " " + msg.ID
+			if msg.ID == "" {
+				if len(msgIDs) == 0 {
+					continue
 				}
+				cacheKey = msg.Protocol + " synthetic:" + msg.Account + ":" + msg.Channel + ":" + msg.Timestamp.Format(time.RFC3339Nano)
+			}
+			if _, exists := gw.Messages.Get(cacheKey); !exists {
+				gw.Messages.Add(cacheKey, msgIDs)
+				gw.MessageBodies.Add(cacheKey, MsgBody{Username: msg.Username, Text: msg.Text})
 			}
 		}
 	}

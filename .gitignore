@@ -53,3 +53,4 @@ docker-configs/ergo/ircd.db
 *.pem
 *.key
 !*.key.example
+docker-configs/matterbridge/matterbridge.toml

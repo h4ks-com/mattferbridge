@@ -214,9 +214,9 @@ func (gw *Gateway) handleMessage(rmsg *config.Message, dest *bridge.Bridge) []*B
 		return brMsgIDs
 	}
 
-	// Get the ID of the parent message in thread
+	// Resolved unconditionally so non-threading destinations can still render a quote fallback.
 	var canonicalParentMsgID string
-	if rmsg.ParentID != "" && dest.GetBool("PreserveThreading") {
+	if rmsg.ParentID != "" {
 		canonicalParentMsgID = gw.FindCanonicalMsgID(rmsg.Protocol, rmsg.ParentID)
 	}
 

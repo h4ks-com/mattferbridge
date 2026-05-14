@@ -29,6 +29,7 @@ type Gateway struct {
 	Message        chan config.Message
 	Name           string
 	Messages       *lru.Cache
+	MessageBodies  *lru.Cache
 
 	logger *logrus.Entry
 }
@@ -39,6 +40,11 @@ type BrMsgID struct {
 	ChannelID string
 }
 
+type MsgBody struct {
+	Username string
+	Text     string
+}
+
 const apiProtocol = "api"
 
 // New creates a new Gateway object associated with the specified router and
@@ -47,14 +53,16 @@ func New(rootLogger *logrus.Logger, cfg *config.Gateway, r *Router) *Gateway {
 	logger := rootLogger.WithFields(logrus.Fields{"prefix": "gateway"})
 
 	cache, _ := lru.New(5000)
+	bodies, _ := lru.New(5000)
 	gw := &Gateway{
-		Channels: make(map[string]*config.ChannelInfo),
-		Message:  r.Message,
-		Router:   r,
-		Bridges:  make(map[string]*bridge.Bridge),
-		Config:   r.Config,
-		Messages: cache,
-		logger:   logger,
+		Channels:      make(map[string]*config.ChannelInfo),
+		Message:       r.Message,
+		Router:        r,
+		Bridges:       make(map[string]*bridge.Bridge),
+		Config:        r.Config,
+		Messages:      cache,
+		MessageBodies: bodies,
+		logger:        logger,
 	}
 	if err := gw.AddConfig(cfg); err != nil {
 		logger.Errorf("Failed to add configuration to gateway: %#v", err)
@@ -483,6 +491,29 @@ func (gw *Gateway) SendMessage(
 	// this means that we didn't find it in the cache so set it to a "msg-parent-not-found" constant
 	if msg.ParentID == "" && rmsg.ParentID != "" {
 		msg.ParentID = config.ParentIDNotFound
+	}
+
+	// Scoped to IRC source: other bridges already render their own quote in rmsg.Text,
+	// adding ours would double-quote.
+	if rmsg.Protocol == "irc" && canonicalParentMsgID != "" && !dest.GetBool("PreserveThreading") {
+		if body, ok := gw.MessageBodies.Get(canonicalParentMsgID); ok {
+			b := body.(MsgBody)
+			format := dest.GetString("QuoteFormat")
+			if format == "" {
+				format = "{MESSAGE} (re @{QUOTENICK}: {QUOTEMESSAGE})"
+			}
+			quoteMsg := b.Text
+			limit := dest.GetInt("QuoteLengthLimit")
+			if limit > 0 && len([]rune(quoteMsg)) > limit {
+				r := []rune(quoteMsg)
+				quoteMsg = string(r[:limit]) + "..."
+			}
+			out := format
+			out = strings.Replace(out, "{MESSAGE}", msg.Text, -1)
+			out = strings.Replace(out, "{QUOTENICK}", strings.TrimSpace(b.Username), -1)
+			out = strings.Replace(out, "{QUOTEMESSAGE}", quoteMsg, -1)
+			msg.Text = out
+		}
 	}
 
 	drop, err := gw.modifyOutMessageTengo(rmsg, &msg, dest)
