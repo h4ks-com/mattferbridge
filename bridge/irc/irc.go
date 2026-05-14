@@ -116,9 +116,6 @@ func (b *Birc) Connect() error {
 	}
 	b.Log.Info("Connection succeeded")
 	b.FirstConnection = false
-	if b.GetInt("DebugLevel") == 0 {
-		i.Handlers.Clear(girc.ALL_EVENTS)
-	}
 	go b.doSend()
 	return nil
 }

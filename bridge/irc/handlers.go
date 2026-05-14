@@ -229,7 +229,11 @@ func (b *Birc) handleOther(client *girc.Client, event girc.Event) {
 		}
 	}
 
-	if b.GetInt("DebugLevel") == 1 {
+	debugLevel := b.GetInt("DebugLevel")
+	if debugLevel == 0 {
+		return
+	}
+	if debugLevel == 1 {
 		if event.Command != "CLIENT_STATE_UPDATED" &&
 			event.Command != "CLIENT_GENERAL_UPDATED" {
 			b.Log.Debugf("%#v", event.String())
