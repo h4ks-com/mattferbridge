@@ -49,6 +49,22 @@ const apiProtocol = "api"
 
 const defaultQuoteFormat = "{MESSAGE} (re @{QUOTENICK}: {QUOTEMESSAGE})"
 
+// sourceEmbedsQuote reports whether the source bridge already embedded the reply
+// quote into rmsg.Text. Adding our fallback on top would double-quote.
+func (gw *Gateway) sourceEmbedsQuote(rmsg *config.Message) bool {
+	src := gw.Bridges[rmsg.Account]
+	if src == nil {
+		return false
+	}
+	switch rmsg.Protocol {
+	case "telegram":
+		return !src.GetBool("QuoteDisable")
+	case "matrix":
+		return src.GetBool("keepquotedreply")
+	}
+	return false
+}
+
 func renderQuoteFallback(gw *Gateway, dest *bridge.Bridge, canonicalID, text string) string {
 	raw, ok := gw.MessageBodies.Get(canonicalID)
 	if !ok {
@@ -518,9 +534,7 @@ func (gw *Gateway) SendMessage(
 		msg.ParentID = config.ParentIDNotFound
 	}
 
-	// Scoped to IRC source: other bridges already render their own quote in rmsg.Text,
-	// adding ours would double-quote.
-	if rmsg.Protocol == "irc" && canonicalParentMsgID != "" && !dest.GetBool("PreserveThreading") {
+	if canonicalParentMsgID != "" && !dest.GetBool("PreserveThreading") && !gw.sourceEmbedsQuote(rmsg) {
 		msg.Text = renderQuoteFallback(gw, dest, canonicalParentMsgID, msg.Text)
 	}
 
