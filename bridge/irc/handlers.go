@@ -203,22 +203,28 @@ func (b *Birc) handleNotice(client *girc.Client, event girc.Event) {
 	}
 }
 
+func (b *Birc) isOurMessageEcho(event girc.Event) bool {
+	if event.Command != "PRIVMSG" && event.Command != girc.NOTICE {
+		return false
+	}
+	if event.Echo {
+		return true
+	}
+	if relayer, ok := event.Tags.Get("draft/relaymsg"); ok && relayer == b.Nick {
+		return true
+	}
+	if relayer, ok := event.Tags.Get("relaymsg"); ok && relayer == b.Nick {
+		return true
+	}
+	return false
+}
+
 func (b *Birc) handleOther(client *girc.Client, event girc.Event) {
-	if event.Command == "PRIVMSG" || event.Command == girc.NOTICE {
-		isOurEcho := event.Echo
-		if !isOurEcho {
-			if relayer, ok := event.Tags.Get("draft/relaymsg"); ok && relayer == b.Nick {
-				isOurEcho = true
-			} else if relayer, ok := event.Tags.Get("relaymsg"); ok && relayer == b.Nick {
-				isOurEcho = true
-			}
-		}
-		if isOurEcho {
-			if msgid, ok := event.Tags.Get("msgid"); ok {
-				select {
-				case b.echoMsgid <- msgid:
-				default:
-				}
+	if b.isOurMessageEcho(event) {
+		if msgid, ok := event.Tags.Get("msgid"); ok {
+			select {
+			case b.echoMsgid <- msgid:
+			default:
 			}
 		}
 	}
