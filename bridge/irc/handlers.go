@@ -206,12 +206,12 @@ func (b *Birc) handleNotice(client *girc.Client, event girc.Event) {
 func (b *Birc) handleOther(client *girc.Client, event girc.Event) {
 	if event.Command == "PRIVMSG" || event.Command == girc.NOTICE {
 		isOurEcho := event.Echo
-		if !isOurEcho && b.relayEchoNick != "" && event.Source != nil &&
-			event.Source.Name == b.relayEchoNick &&
-			len(event.Params) > 0 && event.Params[0] == b.relayEchoChannel {
-			isOurEcho = true
-			b.relayEchoNick = ""
-			b.relayEchoChannel = ""
+		if !isOurEcho {
+			if relayer, ok := event.Tags.Get("draft/relaymsg"); ok && relayer == b.Nick {
+				isOurEcho = true
+			} else if relayer, ok := event.Tags.Get("relaymsg"); ok && relayer == b.Nick {
+				isOurEcho = true
+			}
 		}
 		if isOurEcho {
 			if msgid, ok := event.Tags.Get("msgid"); ok {

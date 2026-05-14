@@ -40,12 +40,6 @@ type Birc struct {
 	channels                                  map[string]bool
 
 	echoMsgid chan string
-	// relayEchoNick + relayEchoChannel track the most recent RELAYMSG we sent.
-	// Server echoes RELAYMSG as PRIVMSG sourced from the relay nick, so girc's
-	// event.Echo flag (which checks our own nick) misses these — we match the
-	// source ourselves to capture the msgid.
-	relayEchoNick    string
-	relayEchoChannel string
 
 	*bridge.Config
 }
@@ -276,8 +270,6 @@ func (b *Birc) doSend() {
 
 		if useRelayMsg { //nolint:nestif
 			username = sanitizeNick(username)
-			b.relayEchoNick = username
-			b.relayEchoChannel = msg.Channel
 			if useReplyTag {
 				if msg.Event == config.EventUserAction {
 					b.i.Cmd.SendRawf("@+draft/reply=%s RELAYMSG %s %s :\x01ACTION %s\x01", msg.ParentID, msg.Channel, username, msg.Text) //nolint:errcheck
