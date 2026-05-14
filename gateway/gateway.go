@@ -47,6 +47,31 @@ type MsgBody struct {
 
 const apiProtocol = "api"
 
+const defaultQuoteFormat = "{MESSAGE} (re @{QUOTENICK}: {QUOTEMESSAGE})"
+
+func renderQuoteFallback(gw *Gateway, dest *bridge.Bridge, canonicalID, text string) string {
+	raw, ok := gw.MessageBodies.Get(canonicalID)
+	if !ok {
+		return text
+	}
+	body, ok := raw.(MsgBody)
+	if !ok {
+		return text
+	}
+	format := dest.GetString("QuoteFormat")
+	if format == "" {
+		format = defaultQuoteFormat
+	}
+	quoteMsg := body.Text
+	if limit := dest.GetInt("QuoteLengthLimit"); limit > 0 && len([]rune(quoteMsg)) > limit {
+		quoteMsg = string([]rune(quoteMsg)[:limit]) + "..."
+	}
+	out := strings.ReplaceAll(format, "{MESSAGE}", text)
+	out = strings.ReplaceAll(out, "{QUOTENICK}", strings.TrimSpace(body.Username))
+	out = strings.ReplaceAll(out, "{QUOTEMESSAGE}", quoteMsg)
+	return out
+}
+
 // New creates a new Gateway object associated with the specified router and
 // following the given configuration.
 func New(rootLogger *logrus.Logger, cfg *config.Gateway, r *Router) *Gateway {
@@ -496,24 +521,7 @@ func (gw *Gateway) SendMessage(
 	// Scoped to IRC source: other bridges already render their own quote in rmsg.Text,
 	// adding ours would double-quote.
 	if rmsg.Protocol == "irc" && canonicalParentMsgID != "" && !dest.GetBool("PreserveThreading") {
-		if body, ok := gw.MessageBodies.Get(canonicalParentMsgID); ok {
-			b := body.(MsgBody)
-			format := dest.GetString("QuoteFormat")
-			if format == "" {
-				format = "{MESSAGE} (re @{QUOTENICK}: {QUOTEMESSAGE})"
-			}
-			quoteMsg := b.Text
-			limit := dest.GetInt("QuoteLengthLimit")
-			if limit > 0 && len([]rune(quoteMsg)) > limit {
-				r := []rune(quoteMsg)
-				quoteMsg = string(r[:limit]) + "..."
-			}
-			out := format
-			out = strings.Replace(out, "{MESSAGE}", msg.Text, -1)
-			out = strings.Replace(out, "{QUOTENICK}", strings.TrimSpace(b.Username), -1)
-			out = strings.Replace(out, "{QUOTEMESSAGE}", quoteMsg, -1)
-			msg.Text = out
-		}
+		msg.Text = renderQuoteFallback(gw, dest, canonicalParentMsgID, msg.Text)
 	}
 
 	drop, err := gw.modifyOutMessageTengo(rmsg, &msg, dest)

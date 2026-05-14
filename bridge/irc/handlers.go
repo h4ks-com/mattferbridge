@@ -80,45 +80,43 @@ func (b *Birc) handleInvite(client *girc.Client, event girc.Event) {
 	}
 }
 
+func (b *Birc) handleQuit(username string, event girc.Event) {
+	if username == b.Nick && strings.Contains(event.Last(), "Ping timeout") {
+		b.Log.Infof("%s reconnecting ..", b.Account)
+		b.Remote <- config.Message{Username: "system", Text: "reconnect", Channel: "", Account: b.Account, Event: config.EventFailure}
+		return
+	}
+	if username == b.Nick || b.GetBool("nosendjoinpart") {
+		return
+	}
+	for channel, users := range b.channelUsers {
+		if _, userInChannel := users[username]; !userInChannel {
+			continue
+		}
+		delete(users, username)
+		msg := config.Message{
+			Username: "system",
+			Text:     username + " quits",
+			Channel:  channel,
+			Account:  b.Account,
+			Event:    config.EventJoinLeave,
+		}
+		if b.GetBool("verbosejoinpart") {
+			msg.Text = username + " (" + event.Source.Ident + "@" + event.Source.Host + ") quits"
+			b.Log.Debugf("<= Sending verbose QUIT event for %s from %s to gateway", username, b.Account)
+		} else {
+			b.Log.Debugf("<= Sending QUIT event for %s from %s to gateway", username, b.Account)
+		}
+		b.Log.Debugf("<= Message is %#v", msg)
+		b.Remote <- msg
+	}
+}
+
 func (b *Birc) handleJoinPart(client *girc.Client, event girc.Event) {
 	username := event.Source.Name
 
-	// Handle QUIT events specially - they affect all channels the user was in
 	if event.Command == "QUIT" {
-		if username == b.Nick && strings.Contains(event.Last(), "Ping timeout") {
-			b.Log.Infof("%s reconnecting ..", b.Account)
-			b.Remote <- config.Message{Username: "system", Text: "reconnect", Channel: "", Account: b.Account, Event: config.EventFailure}
-			return
-		}
-
-		// For other users quitting, generate EventJoinLeave for each channel they were in
-		if username != b.Nick && !b.GetBool("nosendjoinpart") {
-			for channel := range b.channelUsers {
-				if users, exists := b.channelUsers[channel]; exists {
-					if _, userInChannel := users[username]; userInChannel {
-						// Remove user from channel tracking
-						delete(users, username)
-
-						// Send quit event as a "part" for this channel
-						msg := config.Message{
-							Username: "system",
-							Text:     username + " quits",
-							Channel:  channel,
-							Account:  b.Account,
-							Event:    config.EventJoinLeave,
-						}
-						if b.GetBool("verbosejoinpart") {
-							msg.Text = username + " (" + event.Source.Ident + "@" + event.Source.Host + ") quits"
-							b.Log.Debugf("<= Sending verbose QUIT event for %s from %s to gateway", username, b.Account)
-						} else {
-							b.Log.Debugf("<= Sending QUIT event for %s from %s to gateway", username, b.Account)
-						}
-						b.Log.Debugf("<= Message is %#v", msg)
-						b.Remote <- msg
-					}
-				}
-			}
-		}
+		b.handleQuit(username, event)
 		return
 	}
 
@@ -206,7 +204,7 @@ func (b *Birc) handleNotice(client *girc.Client, event girc.Event) {
 }
 
 func (b *Birc) handleOther(client *girc.Client, event girc.Event) {
-	if event.Echo && (event.Command == "PRIVMSG" || event.Command == "NOTICE") {
+	if event.Echo && (event.Command == "PRIVMSG" || event.Command == girc.NOTICE) {
 		if msgid, ok := event.Tags.Get("msgid"); ok {
 			select {
 			case b.echoMsgid <- msgid:

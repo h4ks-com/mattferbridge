@@ -265,11 +265,10 @@ func (b *Birc) doSend() {
 		useReplyTag := msg.ParentValid() && b.GetBool("PreserveThreading") && b.supportsReplyTags()
 		// Optional support for the proposed RELAYMSG extension, described at
 		// https://github.com/jlu5/ircv3-specifications/blob/master/extensions/relaymsg.md
-		// nolint:nestif
 		useRelayMsg := (b.i.HasCapability("overdrivenetworks.com/relaymsg") || b.i.HasCapability("draft/relaymsg")) &&
 			b.GetBool("UseRelayMsg")
 
-		if useRelayMsg {
+		if useRelayMsg { //nolint:nestif
 			username = sanitizeNick(username)
 			if useReplyTag {
 				if msg.Event == config.EventUserAction {

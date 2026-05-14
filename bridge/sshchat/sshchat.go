@@ -168,7 +168,6 @@ func (b *Bsshchat) handleSSHChat() error {
 			// skip our own messages
 			botPrefix := "[" + b.GetString("Nick") + "] \x1b"
 			if strings.HasPrefix(b.r.Text(), botPrefix) {
-
 				// Check if this is an action message: "\x1b[K** username action"
 				if strings.Contains(b.r.Text(), "\x1b[K** ") {
 					actionStart := strings.Index(b.r.Text(), "\x1b[K** ")
@@ -204,8 +203,8 @@ func (b *Bsshchat) handleSSHChat() error {
 						messagePart = strings.TrimSuffix(messagePart, "\r")
 
 						// Parse "username: message" format
-						if strings.Contains(messagePart, ": ") {
-							colonIndex := strings.Index(messagePart, ": ")
+						colonIndex := strings.Index(messagePart, ": ")
+						if colonIndex > 0 {
 							username := messagePart[:colonIndex]
 							messageText := messagePart[colonIndex+2:]
 
@@ -220,7 +219,6 @@ func (b *Bsshchat) handleSSHChat() error {
 								}
 								b.Remote <- rmsg
 								continue
-							} else {
 							}
 						}
 					}
