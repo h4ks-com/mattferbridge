@@ -45,21 +45,19 @@ func (b *Bdiscord) maybeGetLocalAvatar(msg *config.Message) string {
 }
 
 func (b *Bdiscord) webhookSendTextOnly(msg *config.Message, channelID string) (string, error) {
-	msgParts := helper.ClipOrSplitMessage(msg.Text, MessageLength, b.GetString("MessageClipped"), b.GetInt("MessageSplitMaxCount"))
+	content := b.prependReplyLine(msg, channelID) + msg.Text
+	msgParts := helper.ClipOrSplitMessage(content, MessageLength, b.GetString("MessageClipped"), b.GetInt("MessageSplitMaxCount"))
 	msgIds := []string{}
-	replyEmbed := b.buildReplyEmbed(msg, channelID)
-	for i, msgPart := range msgParts {
-		params := &discordgo.WebhookParams{
-			Content:         msgPart,
-			Username:        msg.Username,
-			AvatarURL:       msg.Avatar,
-			AllowedMentions: b.getAllowedMentions(),
-		}
-		// Pseudo-reply card only on the first chunk to avoid duplicates.
-		if i == 0 && replyEmbed != nil {
-			params.Embeds = []*discordgo.MessageEmbed{replyEmbed}
-		}
-		res, err := b.transmitter.Send(channelID, params)
+	for _, msgPart := range msgParts {
+		res, err := b.transmitter.Send(
+			channelID,
+			&discordgo.WebhookParams{
+				Content:         msgPart,
+				Username:        msg.Username,
+				AvatarURL:       msg.Avatar,
+				AllowedMentions: b.getAllowedMentions(),
+			},
+		)
 		if err != nil {
 			return "", err
 		}
@@ -69,26 +67,20 @@ func (b *Bdiscord) webhookSendTextOnly(msg *config.Message, channelID string) (s
 	return strings.Join(msgIds, ";"), nil
 }
 
-// buildReplyEmbed renders a small "reply to" card for webhook messages since
-// Discord webhooks can't set message_reference. Returns nil for non-replies.
-func (b *Bdiscord) buildReplyEmbed(msg *config.Message, channelID string) *discordgo.MessageEmbed {
+// prependReplyLine returns a single clickable markdown line for replies so the
+// reply indicator sits above the content (Discord renders embeds below, which
+// webhooks must use since message_reference isn't supported).
+func (b *Bdiscord) prependReplyLine(msg *config.Message, channelID string) string {
 	if !msg.ParentValid() || msg.ParentUsername == "" {
-		return nil
+		return ""
 	}
-	snippet := msg.ParentText
-	const limit = 120
+	snippet := strings.ReplaceAll(msg.ParentText, "\n", " ")
+	const limit = 50
 	if len([]rune(snippet)) > limit {
 		snippet = string([]rune(snippet)[:limit]) + "…"
 	}
 	url := fmt.Sprintf("https://discord.com/channels/%s/%s/%s", b.guildID, channelID, msg.ParentID)
-	return &discordgo.MessageEmbed{
-		Author: &discordgo.MessageEmbedAuthor{
-			Name: "↪ " + msg.ParentUsername,
-			URL:  url,
-		},
-		Description: snippet,
-		Color:       0x747f8d,
-	}
+	return fmt.Sprintf("> [↪ %s: %s](%s)\n", msg.ParentUsername, snippet, url)
 }
 
 func (b *Bdiscord) webhookSendFilesOnly(msg *config.Message, channelID string) error {
