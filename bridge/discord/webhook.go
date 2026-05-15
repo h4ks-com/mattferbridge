@@ -47,24 +47,48 @@ func (b *Bdiscord) maybeGetLocalAvatar(msg *config.Message) string {
 func (b *Bdiscord) webhookSendTextOnly(msg *config.Message, channelID string) (string, error) {
 	msgParts := helper.ClipOrSplitMessage(msg.Text, MessageLength, b.GetString("MessageClipped"), b.GetInt("MessageSplitMaxCount"))
 	msgIds := []string{}
-	for _, msgPart := range msgParts {
-		res, err := b.transmitter.Send(
-			channelID,
-			&discordgo.WebhookParams{
-				Content:         msgPart,
-				Username:        msg.Username,
-				AvatarURL:       msg.Avatar,
-				AllowedMentions: b.getAllowedMentions(),
-			},
-		)
+	replyEmbed := b.buildReplyEmbed(msg, channelID)
+	for i, msgPart := range msgParts {
+		params := &discordgo.WebhookParams{
+			Content:         msgPart,
+			Username:        msg.Username,
+			AvatarURL:       msg.Avatar,
+			AllowedMentions: b.getAllowedMentions(),
+		}
+		// Pseudo-reply card only on the first chunk to avoid duplicates.
+		if i == 0 && replyEmbed != nil {
+			params.Embeds = []*discordgo.MessageEmbed{replyEmbed}
+		}
+		res, err := b.transmitter.Send(channelID, params)
 		if err != nil {
 			return "", err
-		} else {
-			msgIds = append(msgIds, res.ID)
 		}
+		msgIds = append(msgIds, res.ID)
 	}
 	// Exploit that a discord message ID is actually just a large number, so we encode a list of IDs by separating them with ";".
 	return strings.Join(msgIds, ";"), nil
+}
+
+// buildReplyEmbed renders a small "reply to" card for webhook messages since
+// Discord webhooks can't set message_reference. Returns nil for non-replies.
+func (b *Bdiscord) buildReplyEmbed(msg *config.Message, channelID string) *discordgo.MessageEmbed {
+	if !msg.ParentValid() || msg.ParentUsername == "" {
+		return nil
+	}
+	snippet := msg.ParentText
+	const limit = 120
+	if len([]rune(snippet)) > limit {
+		snippet = string([]rune(snippet)[:limit]) + "…"
+	}
+	url := fmt.Sprintf("https://discord.com/channels/%s/%s/%s", b.guildID, channelID, msg.ParentID)
+	return &discordgo.MessageEmbed{
+		Author: &discordgo.MessageEmbedAuthor{
+			Name: "↪ " + msg.ParentUsername,
+			URL:  url,
+		},
+		Description: snippet,
+		Color:       0x747f8d,
+	}
 }
 
 func (b *Bdiscord) webhookSendFilesOnly(msg *config.Message, channelID string) error {
@@ -171,10 +195,6 @@ func (b *Bdiscord) handleEventWebhook(msg *config.Message, channelID string) (st
 
 	b.Log.Debugf("Processing webhook sending for message %#v", msg)
 	msg.Text = b.replaceUserMentions(msg.Text)
-	// Pseudo-reply: prepend parent URL so Discord unfurls a clickable card.
-	if msg.ParentValid() {
-		msg.Text = fmt.Sprintf("https://discord.com/channels/%s/%s/%s\n%s", b.guildID, channelID, msg.ParentID, msg.Text)
-	}
 	msgID, err := b.webhookSend(msg, channelID)
 	if err != nil {
 		b.Log.Errorf("Could not broadcast via webhook for message %#v: %s", msgID, err)

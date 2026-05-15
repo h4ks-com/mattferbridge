@@ -563,6 +563,17 @@ func (gw *Gateway) SendMessage(
 		msg.Text = renderQuoteFallback(gw, dest, canonicalParentMsgID, msg.Text)
 	}
 
+	// Expose parent author + text so threading-aware destinations (e.g. Discord
+	// webhook) can render a quote card without a separate cache lookup.
+	if canonicalParentMsgID != "" {
+		if raw, ok := gw.MessageBodies.Get(canonicalParentMsgID); ok {
+			if body, ok := raw.(MsgBody); ok {
+				msg.ParentUsername = strings.TrimSpace(body.Username)
+				msg.ParentText = body.Text
+			}
+		}
+	}
+
 	drop, err := gw.modifyOutMessageTengo(rmsg, &msg, dest)
 	if err != nil {
 		gw.logger.Errorf("modifySendMessageTengo: %s", err)
