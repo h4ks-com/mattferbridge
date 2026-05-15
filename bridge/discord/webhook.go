@@ -2,6 +2,7 @@ package bdiscord
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 
 	"github.com/42wim/matterbridge/bridge/config"
@@ -170,6 +171,10 @@ func (b *Bdiscord) handleEventWebhook(msg *config.Message, channelID string) (st
 
 	b.Log.Debugf("Processing webhook sending for message %#v", msg)
 	msg.Text = b.replaceUserMentions(msg.Text)
+	// Pseudo-reply: prepend parent URL so Discord unfurls a clickable card.
+	if msg.ParentValid() {
+		msg.Text = fmt.Sprintf("https://discord.com/channels/%s/%s/%s\n%s", b.guildID, channelID, msg.ParentID, msg.Text)
+	}
 	msgID, err := b.webhookSend(msg, channelID)
 	if err != nil {
 		b.Log.Errorf("Could not broadcast via webhook for message %#v: %s", msgID, err)

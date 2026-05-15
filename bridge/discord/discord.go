@@ -276,9 +276,10 @@ func (b *Bdiscord) Send(msg config.Message) (string, error) {
 		msg.ParentID = ""
 	}
 
-	// Use webhook to send the message
+	// Always use webhook when available; replies get a URL-unfurl card instead
+	// of native reply (Discord webhooks can't set message_reference).
 	useWebhooks := b.shouldMessageUseWebhooks(&msg)
-	if useWebhooks && msg.Event != config.EventMsgDelete && msg.ParentID == "" {
+	if useWebhooks && msg.Event != config.EventMsgDelete {
 		return b.handleEventWebhook(&msg, channelID)
 	}
 
