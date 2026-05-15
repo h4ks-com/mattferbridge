@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/olahol/melody"
 
 	"github.com/42wim/matterbridge/bridge"
@@ -138,7 +139,10 @@ func (b *API) handlePostMessage(c echo.Context) error {
 	message.Channel = "api"
 	message.Protocol = "api"
 	message.Account = b.Account
-	message.ID = ""
+	// Assign a server-side id so the router caches under a stable key and
+	// consumers (e.g. matterdelta) can later reference this message via
+	// parent_id when one of their users quotes it.
+	message.ID = uuid.NewString()
 	message.Timestamp = time.Now()
 
 	var (

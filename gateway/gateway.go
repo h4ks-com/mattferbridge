@@ -543,7 +543,14 @@ func (gw *Gateway) SendMessage(
 
 	msg.ParentID = gw.getDestMsgID(canonicalParentMsgID, dest, channel)
 	if msg.ParentID == "" {
-		msg.ParentID = strings.Replace(canonicalParentMsgID, dest.Protocol+" ", "", 1)
+		// For api destinations keep the full canonical "<protocol> <id>" so
+		// consumers can map both api-typed and cross-protocol parents using
+		// the same key shape that source_id uses.
+		if dest.Protocol == apiProtocol {
+			msg.ParentID = canonicalParentMsgID
+		} else {
+			msg.ParentID = strings.Replace(canonicalParentMsgID, dest.Protocol+" ", "", 1)
+		}
 	}
 
 	// if the parentID is still empty and we have a parentID set in the original message
