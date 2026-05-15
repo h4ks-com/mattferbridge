@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/42wim/matterbridge/bridge"
@@ -41,6 +42,10 @@ type Birc struct {
 
 	echoMsgid chan string
 
+	avatarMap     map[string]string // nick -> sha for avatars rehosted on MediaServer
+	avatarQueried map[string]bool   // nick -> we already sent METADATA GET
+	avatarMu      sync.Mutex
+
 	*bridge.Config
 }
 
@@ -52,6 +57,8 @@ func New(cfg *bridge.Config) bridge.Bridger {
 	b.channelUsers = make(map[string]map[string]bool)
 	b.connected = make(chan error)
 	b.channels = make(map[string]bool)
+	b.avatarMap = make(map[string]string)
+	b.avatarQueried = make(map[string]bool)
 
 	if b.GetInt("MessageDelay") == 0 {
 		b.MessageDelay = 1300
@@ -106,6 +113,9 @@ func (b *Birc) Connect() error {
 	i.Handlers.Add(girc.RPL_ENDOFMOTD, b.handleOtherAuth)
 	i.Handlers.Add(girc.ERR_NOMOTD, b.handleOtherAuth)
 	i.Handlers.Add(girc.ALL_EVENTS, b.handleOther)
+	i.Handlers.Add("METADATA", b.handleMetadataPush)
+	i.Handlers.Add("761", b.handleMetadataKeyValue)
+	i.Handlers.Add("769", b.handleMetadataKeyValue)
 	b.i = i
 
 	go b.doConnect()
@@ -148,6 +158,11 @@ func (b *Birc) Send(msg config.Message) (string, error) {
 	// ignore delete messages
 	if msg.Event == config.EventMsgDelete {
 		return "", nil
+	}
+
+	// Loopback from gateway after re-hosting an avatar via MediaServerUpload.
+	if msg.Event == config.EventAvatarDownload {
+		return b.cacheAvatar(&msg)
 	}
 
 	b.Log.Debugf("=> Receiving %#v", msg)
@@ -390,6 +405,7 @@ func (b *Birc) getClient() (*girc.Client, error) {
 			"message-tags":                   nil,
 			"echo-message":                   nil,
 			"server-time":                    nil,
+			"draft/metadata-2":               nil,
 		},
 	})
 	return i, nil

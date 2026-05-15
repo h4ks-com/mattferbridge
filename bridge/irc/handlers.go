@@ -250,10 +250,23 @@ func (b *Birc) handleOther(client *girc.Client, event girc.Event) {
 func (b *Birc) handleOtherAuth(client *girc.Client, event girc.Event) {
 	b.handleNickServ()
 	b.handleRunCommands()
+	b.handleMetadataSubscribe()
 	// we are now fully connected
 	// only send on first connection
 	if b.FirstConnection {
 		b.connected <- nil
+	}
+}
+
+// handleMetadataSubscribe subscribes to the IRCv3 draft/metadata-2 "avatar" key
+// so the server pushes live updates when users change their avatar. Silently
+// no-ops if the server doesn't advertise the capability.
+func (b *Birc) handleMetadataSubscribe() {
+	if !b.i.HasCapability("draft/metadata-2") {
+		return
+	}
+	if err := b.i.Cmd.SendRaw("METADATA * SUB avatar"); err != nil {
+		b.Log.Debugf("METADATA SUB avatar failed: %s", err)
 	}
 }
 
@@ -267,7 +280,10 @@ func (b *Birc) handlePrivMsg(client *girc.Client, event girc.Event) {
 		Channel:  strings.ToLower(event.Params[0]),
 		Account:  b.Account,
 		UserID:   event.Source.Ident + "@" + event.Source.Host,
+		Avatar:   b.avatarURLFor(event.Source.Name),
 	}
+	// Lazy fetch: first time we see a nick, ask the server for their avatar.
+	b.requestAvatarOnce(event.Source.Name)
 
 	b.Log.Debugf("== Receiving PRIVMSG: %s %s %#v", event.Source.Name, event.Last(), event)
 

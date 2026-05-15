@@ -168,8 +168,9 @@ func (gw *Gateway) handleFilesLocal(fi *config.FileInfo) error {
 func (gw *Gateway) ignoreEvent(event string, dest *bridge.Bridge) bool {
 	switch event {
 	case config.EventAvatarDownload:
-		// Avatar downloads are only relevant for telegram and mattermost for now
-		if dest.Protocol != "mattermost" && dest.Protocol != telegramProtocol && dest.Protocol != "xmpp" {
+		// Avatar downloads loop back to bridges that maintain their own
+		// avatar cache (telegram, mattermost, xmpp, irc via draft/metadata-2).
+		if dest.Protocol != "mattermost" && dest.Protocol != telegramProtocol && dest.Protocol != "xmpp" && dest.Protocol != "irc" {
 			return true
 		}
 	case config.EventJoinLeave:
