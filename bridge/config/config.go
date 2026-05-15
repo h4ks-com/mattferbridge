@@ -45,6 +45,7 @@ type Message struct {
 	ParentID  string    `json:"parent_id"`
 	Timestamp time.Time `json:"timestamp"`
 	ID        string    `json:"id"`
+	SourceID  string    `json:"source_id,omitempty"`
 	Extra     map[string][]interface{}
 }
 

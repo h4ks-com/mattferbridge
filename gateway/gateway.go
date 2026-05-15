@@ -45,7 +45,10 @@ type MsgBody struct {
 	Text     string
 }
 
-const apiProtocol = "api"
+const (
+	apiProtocol      = "api"
+	telegramProtocol = "telegram"
+)
 
 const defaultQuoteFormat = "{MESSAGE} (re @{QUOTENICK}: {QUOTEMESSAGE})"
 
@@ -57,7 +60,7 @@ func (gw *Gateway) sourceEmbedsQuote(rmsg *config.Message) bool {
 		return false
 	}
 	switch rmsg.Protocol {
-	case "telegram":
+	case telegramProtocol:
 		return !src.GetBool("QuoteDisable")
 	case "matrix":
 		return src.GetBool("keepquotedreply")
@@ -116,6 +119,13 @@ func (gw *Gateway) FindCanonicalMsgID(protocol string, mID string) string {
 	ID := protocol + " " + mID
 	if gw.Messages.Contains(ID) {
 		return ID
+	}
+
+	// api consumers (e.g. matterdelta) only see the canonical source_id we
+	// exposed; when they reply they echo it back as parent_id verbatim, so a
+	// space-containing mID may already be a canonical "<protocol> <id>" key.
+	if strings.Contains(mID, " ") && gw.Messages.Contains(mID) {
+		return mID
 	}
 
 	// If not keyed, iterate through cache for downstream, and infer upstream.
@@ -521,6 +531,14 @@ func (gw *Gateway) SendMessage(
 	// for api we need originchannel as channel
 	if dest.Protocol == apiProtocol {
 		msg.Channel = rmsg.Channel
+		// api bridge has no per-destination msg id, so msg.ID stays "" after
+		// the getDestMsgID call above. Expose the canonical source id via a
+		// separate field so consumers (e.g. matterdelta) can map replies back
+		// via parent_id, which already uses this same "<protocol> <id>" form.
+		// Existing api consumers ignore unknown JSON fields, so this is safe.
+		if rmsg.ID != "" {
+			msg.SourceID = rmsg.Protocol + " " + rmsg.ID
+		}
 	}
 
 	msg.ParentID = gw.getDestMsgID(canonicalParentMsgID, dest, channel)
