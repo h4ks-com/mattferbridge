@@ -18,10 +18,13 @@ var imageMagicPrefixes = [][]byte{
 
 const avatarKey = "avatar"
 
-// handleMetadataPush handles unsolicited METADATA events the server pushes to
-// us because we subscribed (see handleMetadataSubscribe).
-//
-// Notification shape: `:server METADATA <Target> <Key> <Visibility> [<Value>]`.
+// IRC avatars use the IRCv3 draft/metadata-2 capability: clients SET an
+// `avatar` key with a URL, the server pushes that key to subscribers and
+// replies to GETs. We rehost the URL on the configured MediaServerUpload so
+// downstream bridges (notably Discord webhooks) always see an HTTPS URL of
+// known shape, and so the avatar survives the source host going down.
+
+// METADATA push: `:server METADATA <target> <key> <visibility> [<value>]`.
 func (b *Birc) handleMetadataPush(client *girc.Client, event girc.Event) {
 	if len(event.Params) < 4 {
 		return
@@ -33,10 +36,7 @@ func (b *Birc) handleMetadataPush(client *girc.Client, event girc.Event) {
 	b.processAvatarMetadata(extractNick(target), value)
 }
 
-// handleMetadataKeyValue handles RPL_KEYVALUE (761) and RPL_METADATAWHOIS (769)
-// which carry an extra leading parameter (our own nick).
-//
-// Reply shape: `<client> <target> <key> <visibility> [<value>]`.
+// RPL_KEYVALUE (761) and RPL_METADATAWHOIS (769) prepend our own nick.
 func (b *Birc) handleMetadataKeyValue(client *girc.Client, event girc.Event) {
 	if len(event.Params) < 5 {
 		return
@@ -48,26 +48,28 @@ func (b *Birc) handleMetadataKeyValue(client *girc.Client, event girc.Event) {
 	b.processAvatarMetadata(extractNick(target), value)
 }
 
-// extractNick pulls just the nick out of either `nick` or `nick!user@host`.
+// Targets prefixed `#` or `&` are channels; we only care about user avatars.
 func extractNick(target string) string {
+	if target == "" || target[0] == '#' || target[0] == '&' {
+		return ""
+	}
 	if i := strings.IndexByte(target, '!'); i > 0 {
 		return target[:i]
 	}
 	return target
 }
 
-// processAvatarMetadata validates the URL and kicks off an async re-host via
-// MediaServerUpload (mirroring telegram's avatar flow). nick is the bare nick.
 func (b *Birc) processAvatarMetadata(nick, url string) {
 	if nick == "" || url == "" {
 		return
 	}
+	// Reject `data:`, `javascript:`, relatives, and the `::https://` artifact
+	// produced by clients that double-prefix the IRC trailing-parameter colon.
 	if !isAbsoluteHTTPURL(url) {
 		b.Log.Debugf("Ignoring non-http avatar URL for %s: %q", nick, url)
 		return
 	}
 	if b.General.MediaServerUpload == "" {
-		// No place to rehost; without it Discord can't fetch the avatar reliably.
 		return
 	}
 
@@ -82,39 +84,43 @@ func (b *Birc) processAvatarMetadata(nick, url string) {
 	go b.downloadAndUploadAvatar(nick, url)
 }
 
-// isAbsoluteHTTPURL guards against the IRCv3 wire-encoding artifact `::https://`
-// (double-colon) and other shapes (`data:`, `javascript:`, relative paths).
 func isAbsoluteHTTPURL(url string) bool {
 	return strings.HasPrefix(url, "https://") || strings.HasPrefix(url, "http://")
 }
 
-// avatarOriginal returns the source URL we used to populate the cache, so we
-// can detect changes and avoid redundant downloads. We store it as a hidden
-// "<nick>:url" entry alongside the sha mapping.
+// Hidden key alongside the sha mapping; lets us detect URL changes and skip
+// re-downloading when the user republishes the same URL.
 func (b *Birc) avatarOriginal(nick string) (string, bool) {
 	url, ok := b.avatarMap[":url:"+nick]
 	return url, ok
 }
 
-// downloadAndUploadAvatar fetches the avatar from the user-supplied URL, runs
-// it through matterbridge's standard download helper, then emits an
-// EventAvatarDownload to the gateway which re-hosts it on MediaServerUpload.
-// The result loops back to Send() → cacheAvatar() to populate b.avatarMap.
 func (b *Birc) downloadAndUploadAvatar(nick, url string) {
 	data, err := helper.DownloadFile(url)
 	if err != nil {
 		b.Log.Debugf("Avatar download failed for %s (%s): %s", nick, url, err)
 		return
 	}
+	// Magic-byte sniff: a user's avatar URL is untrusted content and we don't
+	// want to rehost arbitrary payloads on s.h4ks.com.
 	if !looksLikeImage(*data) {
 		b.Log.Debugf("Avatar at %s isn't an image, skipping", url)
 		return
 	}
 
 	name := nick + ".png"
+	// Gateway only routes EventAvatarDownload to destinations whose channel
+	// matches the source's; without a Channel the loopback never fires and
+	// cacheAvatar wouldn't populate b.avatarMap.
+	channel := b.anyJoinedChannel()
+	if channel == "" {
+		b.Log.Debugf("Skipping avatar upload for %s: no joined channel yet", nick)
+		return
+	}
 	rmsg := config.Message{
 		Username: "system",
 		Text:     "avatar",
+		Channel:  channel,
 		Account:  b.Account,
 		UserID:   nick,
 		Event:    config.EventAvatarDownload,
@@ -133,8 +139,6 @@ func (b *Birc) downloadAndUploadAvatar(nick, url string) {
 	b.Remote <- rmsg
 }
 
-// looksLikeImage sniffs the leading bytes for PNG/JPEG/GIF/WebP magic numbers.
-// Avoids re-hosting arbitrary content a user pointed their avatar URL at.
 func looksLikeImage(b []byte) bool {
 	if len(b) < 12 {
 		return false
@@ -147,8 +151,8 @@ func looksLikeImage(b []byte) bool {
 	return bytes.HasPrefix(b, []byte("RIFF")) && bytes.Equal(b[8:12], []byte("WEBP"))
 }
 
-// requestAvatarOnce sends `METADATA <nick> GET avatar` the first time we see
-// a user, so we learn their avatar without waiting for them to SET it again.
+// Lazy GET on first sight of a nick so we don't need every user to re-SET
+// their avatar to be discovered after we connect.
 func (b *Birc) requestAvatarOnce(nick string) {
 	if nick == "" || nick == b.Nick {
 		return
@@ -168,9 +172,9 @@ func (b *Birc) requestAvatarOnce(nick string) {
 	}
 }
 
-// cacheAvatar stores the sha emitted by gateway after re-hosting completes.
-// Mirrors Btelegram.cacheAvatar so helper.GetAvatar resolves to the rehosted
-// URL on subsequent sends.
+// Called via Send() when gateway loops EventAvatarDownload back to us with
+// the rehosted file. Mirrors Btelegram.cacheAvatar so helper.GetAvatar
+// produces a real URL on subsequent outgoing messages.
 func (b *Birc) cacheAvatar(msg *config.Message) (string, error) {
 	if len(msg.Extra["file"]) == 0 {
 		return "", nil
@@ -189,10 +193,15 @@ func (b *Birc) cacheAvatar(msg *config.Message) (string, error) {
 	return "", nil
 }
 
-// avatarURLFor returns the public MediaServerDownload URL for a nick's avatar,
-// or "" if we haven't (yet) seen one.
 func (b *Birc) avatarURLFor(nick string) string {
 	b.avatarMu.Lock()
 	defer b.avatarMu.Unlock()
 	return helper.GetAvatar(b.avatarMap, nick, b.General)
+}
+
+func (b *Birc) anyJoinedChannel() string {
+	for ch := range b.channels {
+		return ch
+	}
+	return ""
 }
