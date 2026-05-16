@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/42wim/matterbridge/bridge/config"
 	"github.com/42wim/matterbridge/bridge/helper"
@@ -79,6 +80,10 @@ func (b *Birc) processAvatarMetadata(nick, url string) {
 		b.avatarMu.Unlock()
 		return
 	}
+	// Reserve the slot before spawning so the METADATA SUB burst at connect
+	// (one push per channel) doesn't fan out into multiple parallel uploads
+	// for the same URL.
+	b.avatarMap[":url:"+nick] = url
 	b.avatarMu.Unlock()
 
 	go b.downloadAndUploadAvatar(nick, url)
@@ -108,7 +113,11 @@ func (b *Birc) downloadAndUploadAvatar(nick, url string) {
 		return
 	}
 
-	name := nick + ".png"
+	// girafiles (s.h4ks.com) reserves `<bucket>/<alias>` permanently — once a
+	// filename is used at a given SHA path it 500s on re-upload, even after the
+	// file's 4h TTL expires. Including the unix timestamp makes the alias fresh
+	// on every container restart.
+	name := fmt.Sprintf("%s_%d.png", nick, time.Now().Unix())
 	// Gateway only routes EventAvatarDownload to destinations whose channel
 	// matches the source's; without a Channel the loopback never fires and
 	// cacheAvatar wouldn't populate b.avatarMap.
@@ -131,10 +140,6 @@ func (b *Birc) downloadAndUploadAvatar(nick, url string) {
 		return
 	}
 	helper.HandleDownloadData(b.Log, &rmsg, name, "", "", data, b.General)
-
-	b.avatarMu.Lock()
-	b.avatarMap[":url:"+nick] = url
-	b.avatarMu.Unlock()
 
 	b.Remote <- rmsg
 }
@@ -173,8 +178,10 @@ func (b *Birc) requestAvatarOnce(nick string) {
 }
 
 // Called via Send() when gateway loops EventAvatarDownload back to us with
-// the rehosted file. Mirrors Btelegram.cacheAvatar so helper.GetAvatar
-// produces a real URL on subsequent outgoing messages.
+// the rehosted file. Stores the gateway-computed URL directly rather than the
+// SHA: helper.GetAvatar reconstructs the URL as <sha>/<nick>.png, but our
+// upload filename varies per-upload (see downloadAndUploadAvatar), so the
+// reconstruction would 404.
 func (b *Birc) cacheAvatar(msg *config.Message) (string, error) {
 	if len(msg.Extra["file"]) == 0 {
 		return "", nil
@@ -183,20 +190,20 @@ func (b *Birc) cacheAvatar(msg *config.Message) (string, error) {
 	if !ok {
 		return "", nil
 	}
-	if fi.SHA == "" {
+	if fi.URL == "" {
 		return "", nil
 	}
 	b.avatarMu.Lock()
-	b.avatarMap[msg.UserID] = fi.SHA
+	b.avatarMap[msg.UserID] = fi.URL
 	b.avatarMu.Unlock()
-	b.Log.Debugf("Cached avatar %s for %s", fi.SHA, msg.UserID)
+	b.Log.Debugf("Cached avatar URL %s for %s", fi.URL, msg.UserID)
 	return "", nil
 }
 
 func (b *Birc) avatarURLFor(nick string) string {
 	b.avatarMu.Lock()
 	defer b.avatarMu.Unlock()
-	return helper.GetAvatar(b.avatarMap, nick, b.General)
+	return b.avatarMap[nick]
 }
 
 func (b *Birc) anyJoinedChannel() string {
