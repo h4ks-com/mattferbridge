@@ -143,6 +143,64 @@ func stripPrompt(s string) string {
 	return s[pos+3:]
 }
 
+// sshChatParse extracts a chat message from one terminal line written by the
+// ssh-chat server, or returns nil if the line should not be relayed. Lines
+// that reach steady-state come from the bot's own terminal rendering — the
+// server clears the prompt with `\x1b[K` and then writes the message body, so
+// we anchor parsing on that escape. Returned Message has Account left empty
+// for the caller to fill.
+func sshChatParse(text, botNick string) *config.Message {
+	if !strings.Contains(text, "\x1b[K") {
+		return nil
+	}
+	if strings.Contains(text, "Rate limiting is in effect") {
+		return nil
+	}
+	botPrefix := "[" + botNick + "] \x1b"
+	if !strings.HasPrefix(text, botPrefix) {
+		return nil
+	}
+	if actionStart := strings.Index(text, "\x1b[K** "); actionStart != -1 {
+		actionPart := strings.TrimSuffix(text[actionStart+6:], "\r")
+		parts := strings.SplitN(actionPart, " ", 2)
+		if len(parts) < 2 {
+			return nil
+		}
+		return &config.Message{
+			Username: parts[0],
+			Text:     parts[1],
+			Channel:  "sshchat",
+			UserID:   "nick",
+			Event:    config.EventUserAction,
+		}
+	}
+	kIndex := strings.Index(text, "\x1b[K")
+	if kIndex == -1 {
+		return nil
+	}
+	messagePart := strings.TrimSuffix(text[kIndex+3:], "\r")
+	// `-> ...` is SystemMsg (private to bot); ` * ...` is AnnounceMsg
+	// (join/leave/server notice). Neither is real chat.
+	if strings.HasPrefix(messagePart, "-> ") || strings.HasPrefix(messagePart, " * ") {
+		return nil
+	}
+	colonIndex := strings.Index(messagePart, ": ")
+	if colonIndex <= 0 {
+		return nil
+	}
+	username := messagePart[:colonIndex]
+	body := messagePart[colonIndex+2:]
+	if username == "system" || username == botNick {
+		return nil
+	}
+	return &config.Message{
+		Username: username,
+		Text:     body,
+		Channel:  "sshchat",
+		UserID:   "nick",
+	}
+}
+
 func (b *Bsshchat) handleSSHChat() error {
 	/*
 		done := b.sshchatKeepAlive()
@@ -151,88 +209,27 @@ func (b *Bsshchat) handleSSHChat() error {
 	wait := true
 	for {
 		if b.r.Scan() {
+			text := b.r.Text()
 			if b.GetBool("Debug") {
-				b.Log.Debugf("Raw SSH chat line: %q", b.r.Text())
+				b.Log.Debugf("Raw SSH chat line: %q", text)
 			}
-			// ignore messages from ourselves
-			if !strings.Contains(b.r.Text(), "\033[K") {
-				if b.GetBool("Debug") {
-					b.Log.Debugf("Skipping line without \\033[K")
-				}
+			if !strings.Contains(text, "\033[K") {
 				continue
 			}
-			if strings.Contains(b.r.Text(), "Rate limiting is in effect") {
+			if strings.Contains(text, "Rate limiting is in effect") {
 				continue
 			}
-
-			// skip our own messages
-			botPrefix := "[" + b.GetString("Nick") + "] \x1b"
-			if strings.HasPrefix(b.r.Text(), botPrefix) {
-				// Check if this is an action message: "\x1b[K** username action"
-				if strings.Contains(b.r.Text(), "\x1b[K** ") {
-					actionStart := strings.Index(b.r.Text(), "\x1b[K** ")
-					if actionStart != -1 {
-						actionPart := b.r.Text()[actionStart+6:] // Skip "\x1b[K** "
-						actionPart = strings.TrimSuffix(actionPart, "\r")
-						parts := strings.SplitN(actionPart, " ", 2)
-						if len(parts) >= 2 {
-							username := parts[0]
-							actionText := parts[1]
-							rmsg := config.Message{
-								Username: username,
-								Text:     actionText,
-								Channel:  "sshchat",
-								Account:  b.Account,
-								UserID:   "nick",
-								Event:    config.EventUserAction,
-							}
-							if b.GetBool("Debug") {
-								b.Log.Debugf("Detected SSH action from %s: %s", username, actionText)
-							}
-							b.Remote <- rmsg
-							continue
-						}
-					}
-				}
-
-				// Check if this is a regular user message: "\x1b[...D\x1b[Kusername: message"
-				if strings.Contains(b.r.Text(), "\x1b[K") {
-					kIndex := strings.Index(b.r.Text(), "\x1b[K")
-					if kIndex != -1 {
-						messagePart := b.r.Text()[kIndex+3:] // Skip "\x1b[K"
-						messagePart = strings.TrimSuffix(messagePart, "\r")
-
-						// `-> ...` is ssh-chat's SystemMsg — private reply to the bot, never chat.
-						if strings.HasPrefix(messagePart, "-> ") {
-							continue
-						}
-
-						// Parse "username: message" format
-						colonIndex := strings.Index(messagePart, ": ")
-						if colonIndex > 0 {
-							username := messagePart[:colonIndex]
-							messageText := messagePart[colonIndex+2:]
-
-							// Skip system messages and our own messages
-							if username != "system" && username != b.GetString("Nick") {
-								rmsg := config.Message{
-									Username: username,
-									Text:     messageText,
-									Channel:  "sshchat",
-									Account:  b.Account,
-									UserID:   "nick",
-								}
-								b.Remote <- rmsg
-								continue
-							}
-						}
-					}
-				}
-
-				// Skip all other messages from our bot
+			botNick := b.GetString("Nick")
+			if msg := sshChatParse(text, botNick); msg != nil {
+				msg.Account = b.Account
+				b.Remote <- *msg
 				continue
 			}
-			res := strings.Split(stripPrompt(b.r.Text()), ":")
+			botPrefix := "[" + botNick + "] \x1b"
+			if strings.HasPrefix(text, botPrefix) {
+				continue
+			}
+			res := strings.Split(stripPrompt(text), ":")
 			if res[0] == "-> Set theme" {
 				wait = false
 				if b.GetBool("Debug") {
