@@ -80,9 +80,7 @@ func (b *Birc) processAvatarMetadata(nick, url string) {
 		b.avatarMu.Unlock()
 		return
 	}
-	// Reserve the slot before spawning so the METADATA SUB burst at connect
-	// (one push per channel) doesn't fan out into multiple parallel uploads
-	// for the same URL.
+	// Reserve before spawn so the connect-time METADATA SUB burst doesn't fan out.
 	b.avatarMap[":url:"+nick] = url
 	b.avatarMu.Unlock()
 
@@ -113,10 +111,7 @@ func (b *Birc) downloadAndUploadAvatar(nick, url string) {
 		return
 	}
 
-	// girafiles (s.h4ks.com) reserves `<bucket>/<alias>` permanently — once a
-	// filename is used at a given SHA path it 500s on re-upload, even after the
-	// file's 4h TTL expires. Including the unix timestamp makes the alias fresh
-	// on every container restart.
+	// girafiles reserves <bucket>/<alias> forever, so reuse 500s even after TTL expiry.
 	name := fmt.Sprintf("%s_%d.png", nick, time.Now().Unix())
 	// Gateway only routes EventAvatarDownload to destinations whose channel
 	// matches the source's; without a Channel the loopback never fires and
@@ -177,11 +172,8 @@ func (b *Birc) requestAvatarOnce(nick string) {
 	}
 }
 
-// Called via Send() when gateway loops EventAvatarDownload back to us with
-// the rehosted file. Stores the gateway-computed URL directly rather than the
-// SHA: helper.GetAvatar reconstructs the URL as <sha>/<nick>.png, but our
-// upload filename varies per-upload (see downloadAndUploadAvatar), so the
-// reconstruction would 404.
+// Store fi.URL not fi.SHA: our upload filename varies per-upload, so the
+// <sha>/<nick>.png reconstruction in helper.GetAvatar would 404.
 func (b *Birc) cacheAvatar(msg *config.Message) (string, error) {
 	if len(msg.Extra["file"]) == 0 {
 		return "", nil

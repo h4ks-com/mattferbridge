@@ -227,14 +227,18 @@ func (b *Bsshchat) handleSSHChat() error {
 				// Skip all other messages from our bot
 				continue
 			}
-			res := strings.Split(stripPrompt(b.r.Text()), ":")
-			if res[0] == "-> Set theme" {
-				wait = false
-				if b.GetBool("Debug") {
-					b.Log.Debugf("mono found, allowing")
+			stripped := stripPrompt(b.r.Text())
+			// `-> ...` is ssh-chat's SystemMsg — private reply to the bot, never chat.
+			if strings.HasPrefix(stripped, "-> ") {
+				if strings.HasPrefix(stripped, "-> Set theme") {
+					wait = false
+					if b.GetBool("Debug") {
+						b.Log.Debugf("mono found, allowing")
+					}
 				}
 				continue
 			}
+			res := strings.Split(stripped, ":")
 			if !wait {
 				if b.GetBool("Debug") {
 					b.Log.Debugf("<= Message %#v", res)
