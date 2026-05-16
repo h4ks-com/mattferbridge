@@ -202,6 +202,11 @@ func (b *Bsshchat) handleSSHChat() error {
 						messagePart := b.r.Text()[kIndex+3:] // Skip "\x1b[K"
 						messagePart = strings.TrimSuffix(messagePart, "\r")
 
+						// `-> ...` is ssh-chat's SystemMsg — private reply to the bot, never chat.
+						if strings.HasPrefix(messagePart, "-> ") {
+							continue
+						}
+
 						// Parse "username: message" format
 						colonIndex := strings.Index(messagePart, ": ")
 						if colonIndex > 0 {
@@ -227,18 +232,14 @@ func (b *Bsshchat) handleSSHChat() error {
 				// Skip all other messages from our bot
 				continue
 			}
-			stripped := stripPrompt(b.r.Text())
-			// `-> ...` is ssh-chat's SystemMsg — private reply to the bot, never chat.
-			if strings.HasPrefix(stripped, "-> ") {
-				if strings.HasPrefix(stripped, "-> Set theme") {
-					wait = false
-					if b.GetBool("Debug") {
-						b.Log.Debugf("mono found, allowing")
-					}
+			res := strings.Split(stripPrompt(b.r.Text()), ":")
+			if res[0] == "-> Set theme" {
+				wait = false
+				if b.GetBool("Debug") {
+					b.Log.Debugf("mono found, allowing")
 				}
 				continue
 			}
-			res := strings.Split(stripped, ":")
 			if !wait {
 				if b.GetBool("Debug") {
 					b.Log.Debugf("<= Message %#v", res)
