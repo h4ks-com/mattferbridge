@@ -46,6 +46,10 @@ type Birc struct {
 	avatarQueried map[string]bool   // nick -> we already sent METADATA GET
 	avatarMu      sync.Mutex
 
+	// multiline groups PRIVMSGs inside an IRCv3 draft/multiline batch so
+	// they relay to other bridges as a single message instead of N lines.
+	multiline *batchManager
+
 	*bridge.Config
 }
 
@@ -59,6 +63,7 @@ func New(cfg *bridge.Config) bridge.Bridger {
 	b.channels = make(map[string]bool)
 	b.avatarMap = make(map[string]string)
 	b.avatarQueried = make(map[string]bool)
+	b.multiline = newBatchManager(multilineBatchTimeout, b.flushMultilineBatch)
 
 	if b.GetInt("MessageDelay") == 0 {
 		b.MessageDelay = 1300
@@ -406,6 +411,8 @@ func (b *Birc) getClient() (*girc.Client, error) {
 			"echo-message":                   nil,
 			"server-time":                    nil,
 			"draft/metadata-2":               nil,
+			"batch":                          nil,
+			"draft/multiline":                nil,
 		},
 	})
 	return i, nil

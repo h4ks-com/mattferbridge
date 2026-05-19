@@ -171,7 +171,9 @@ func (b *Birc) handleNewConnection(client *girc.Client, event girc.Event) {
 	i.Handlers.Clear("KICK")
 	i.Handlers.Clear("INVITE")
 
+	i.Handlers.Clear("BATCH")
 	i.Handlers.AddBg("PRIVMSG", b.handlePrivMsg)
+	i.Handlers.AddBg("BATCH", b.handleBatch)
 	i.Handlers.Add(girc.RPL_TOPICWHOTIME, b.handleTopicWhoTime)
 	i.Handlers.AddBg(girc.NOTICE, b.handleNotice)
 	i.Handlers.AddBg("JOIN", b.handleJoinPart)
@@ -275,6 +277,15 @@ func (b *Birc) handlePrivMsg(client *girc.Client, event girc.Event) {
 		return
 	}
 
+	// IRCv3 draft/multiline: PRIVMSGs tagged with @batch=<ref> for a
+	// pending multiline batch are accumulated and flushed as one message
+	// when BATCH end arrives (or the safety timeout fires).
+	if refTag, ok := event.Tags.Get("batch"); ok {
+		if b.appendMultilinePart(refTag, event) {
+			return
+		}
+	}
+
 	rmsg := config.Message{
 		Username: event.Source.Name,
 		Channel:  strings.ToLower(event.Params[0]),
@@ -316,37 +327,146 @@ func (b *Birc) handlePrivMsg(client *girc.Client, event girc.Event) {
 	// strip action, we made an event if it was an action
 	rmsg.Text += event.StripAction()
 
-	// start detecting the charset
+	converted, err := b.convertCharset(rmsg.Text)
+	if err != nil {
+		return
+	}
+	rmsg.Text = converted
+
+	b.Log.Debugf("<= Sending message from %s on %s to gateway", event.Params[0], b.Account)
+	b.Remote <- rmsg
+}
+
+// convertCharset normalizes inbound text into UTF-8. Returns the original
+// text on detection failure so callers may still choose to relay it.
+func (b *Birc) convertCharset(text string) (string, error) {
 	mycharset := b.GetString("Charset")
 	if mycharset == "" {
-		// detect what were sending so that we convert it to utf-8
 		detector := chardet.NewTextDetector()
-		result, err := detector.DetectBest([]byte(rmsg.Text))
+		result, err := detector.DetectBest([]byte(text))
 		if err != nil {
-			b.Log.Infof("detection failed for rmsg.Text: %#v", rmsg.Text)
-			return
+			b.Log.Infof("detection failed for text: %#v", text)
+			return text, err
 		}
 		b.Log.Debugf("detected %s confidence %#v", result.Charset, result.Confidence)
 		mycharset = result.Charset
-		// if we're not sure, just pick ISO-8859-1
+		// Low confidence detection: fall back to a permissive single-byte
+		// codec rather than risk mojibake from a guess.
 		if result.Confidence < 80 {
 			mycharset = "ISO-8859-1"
 		}
 	}
 	switch mycharset {
 	case "gbk", "gb18030", "gb2312", "big5", "euc-kr", "euc-jp", "shift-jis", "iso-2022-jp":
-		rmsg.Text = toUTF8(b.GetString("Charset"), rmsg.Text)
+		return toUTF8(b.GetString("Charset"), text), nil
 	default:
-		r, err := charset.NewReader(mycharset, strings.NewReader(rmsg.Text))
+		r, err := charset.NewReader(mycharset, strings.NewReader(text))
 		if err != nil {
 			b.Log.Errorf("charset to utf-8 conversion failed: %s", err)
-			return
+			return text, err
 		}
 		output, _ := ioutil.ReadAll(r)
-		rmsg.Text = string(output)
+		return string(output), nil
 	}
+}
 
-	b.Log.Debugf("<= Sending message from %s on %s to gateway", event.Params[0], b.Account)
+// handleBatch only tracks draft/multiline batches; other batch types (e.g.
+// chathistory) fall through and let handlePrivMsg handle each line as before.
+func (b *Birc) handleBatch(client *girc.Client, event girc.Event) {
+	if len(event.Params) == 0 {
+		return
+	}
+	ref := event.Params[0]
+	if len(ref) < 2 {
+		return
+	}
+	refTag := ref[1:]
+	switch ref[0] {
+	case '+':
+		var batchType, target string
+		if len(event.Params) >= 2 {
+			batchType = event.Params[1]
+		}
+		if len(event.Params) >= 3 {
+			target = event.Params[2]
+		}
+		if batchType != multilineBatchType {
+			return
+		}
+		mb := &multilineBatch{target: strings.ToLower(target)}
+		if msgid, ok := event.Tags.Get("msgid"); ok {
+			mb.msgid = msgid
+		}
+		if replyTo, ok := event.Tags.Get("+reply"); ok {
+			mb.parentID = replyTo
+		} else if replyTo, ok := event.Tags.Get("+draft/reply"); ok {
+			mb.parentID = replyTo
+		}
+		b.multiline.start(refTag, mb)
+	case '-':
+		b.multiline.end(refTag)
+	}
+}
+
+// appendMultilinePart returns false when the ref tag is unknown so the
+// caller can fall back to normal per-line handling (chathistory batches,
+// non-multiline batches, or any tag we never saw a start for).
+func (b *Birc) appendMultilinePart(refTag string, event girc.Event) bool {
+	_, concat := event.Tags.Get("draft/multiline-concat")
+	text := event.Last()
+	isAction := false
+	if ok, ctcp := event.IsCTCP(); ok {
+		if ctcp.Command != girc.CTCP_ACTION {
+			return false
+		}
+		isAction = true
+		text = event.StripAction()
+	}
+	isNotice := event.Command == "NOTICE"
+	source := ""
+	userID := ""
+	if event.Source != nil {
+		source = event.Source.Name
+		userID = event.Source.Ident + "@" + event.Source.Host
+	}
+	return b.multiline.append(refTag, multilinePart{text: text, concat: concat}, source, userID, isAction, isNotice)
+}
+
+func (b *Birc) flushMultilineBatch(mb *multilineBatch) {
+	if mb == nil || len(mb.parts) == 0 {
+		return
+	}
+	// Drop self-echo: nothing to relay back to ourselves.
+	if mb.source != "" && mb.source == b.Nick {
+		return
+	}
+	text := combineMultiline(mb.parts)
+	converted, err := b.convertCharset(text)
+	if err == nil {
+		text = converted
+	}
+	rmsg := config.Message{
+		Username: mb.source,
+		Channel:  mb.target,
+		Account:  b.Account,
+		UserID:   mb.userID,
+		Avatar:   b.avatarURLFor(mb.source),
+		Text:     text,
+	}
+	if b.GetBool("PreserveThreading") {
+		rmsg.ID = mb.msgid
+		rmsg.ParentID = mb.parentID
+	}
+	switch {
+	case mb.isAction:
+		rmsg.Event = config.EventUserAction
+	case mb.isNotice:
+		rmsg.Event = config.EventNoticeIRC
+	}
+	if mb.source != "" {
+		b.requestAvatarOnce(mb.source)
+	}
+	b.Log.Debugf("<= Sending multiline batch (%d parts) from %s on %s to gateway", len(mb.parts), mb.source, mb.target)
 	b.Remote <- rmsg
 }
 
