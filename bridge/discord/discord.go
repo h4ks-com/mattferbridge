@@ -228,6 +228,8 @@ func (b *Bdiscord) Connect() error {
 	b.c.AddHandler(b.messageUpdate)
 	b.c.AddHandler(b.messageDelete)
 	b.c.AddHandler(b.messageDeleteBulk)
+	b.c.AddHandler(b.messageReactionAdd)
+	b.c.AddHandler(b.messageReactionRemove)
 	b.c.AddHandler(b.memberAdd)
 	b.c.AddHandler(b.memberRemove)
 	b.c.AddHandler(b.memberUpdate)
@@ -269,6 +271,11 @@ func (b *Bdiscord) Send(msg config.Message) (string, error) {
 	// Make a action /me of the message
 	if msg.Event == config.EventUserAction {
 		msg.Text = "_" + msg.Text + "_"
+	}
+
+	// Reactions go through the bot session; webhooks can't react.
+	if msg.IsReaction() {
+		return b.handleReactionSend(&msg, channelID)
 	}
 
 	// Handle prefix hint for unthreaded messages.

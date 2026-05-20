@@ -8,4 +8,5 @@ import (
 
 func init() {
 	FullMap["irc"] = birc.New
+	ReactionSupport["irc"] = struct{}{}
 }

@@ -50,6 +50,13 @@ func (b *Btelegram) Connect() error {
 	}
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
+	// AllowedUpdates is all-or-nothing: once set, Telegram only sends the
+	// enumerated types. message_reaction is opt-in (and needs the bot to be a
+	// chat admin); the rest are the update types this bridge consumes.
+	u.AllowedUpdates = []string{
+		"message", "edited_message", "channel_post", "edited_channel_post",
+		"message_reaction",
+	}
 	updates := b.c.GetUpdatesChan(u)
 	b.Log.Info("Connection succeeded")
 	go b.handleRecv(updates)
@@ -128,6 +135,10 @@ func (b *Btelegram) Send(msg config.Message) (string, error) {
 	// map the file SHA to our user (caches the avatar)
 	if msg.Event == config.EventAvatarDownload {
 		return b.cacheAvatar(&msg)
+	}
+
+	if msg.IsReaction() {
+		return b.handleReactionSend(&msg, chatid)
 	}
 
 	if b.GetString("MessageFormat") == HTMLFormat {
@@ -232,6 +243,50 @@ func (b *Btelegram) intParentID(parentID string) (int, error) {
 		return 0, err
 	}
 	return pid, nil
+}
+
+// handleReactionSend reacts as the bot via setMessageReaction. It uses the raw
+// MakeRequest path so it works on the pinned telegram-bot-api v6.5.0 (which
+// predates Bot API 7.0). A non-premium bot can hold at most one reaction per
+// message; ReactionAdd replaces it, ReactionRemove clears it. Telegram rejects
+// emoji outside its allowed set with REACTION_INVALID, which we log and drop.
+func (b *Btelegram) handleReactionSend(msg *config.Message, chatid int64) (string, error) {
+	if !msg.ParentValid() {
+		return "", nil
+	}
+	parentID, err := b.intParentID(msg.ParentID)
+	if err != nil || parentID == 0 {
+		return "", nil //nolint:nilerr // unparseable parent: drop quietly, not a send error
+	}
+	emoji := ""
+	if msg.Event == config.EventReactionAdd {
+		emoji = msg.ReactionEmoji()
+		if emoji == "" {
+			return "", nil
+		}
+	}
+	params, err := setMessageReactionParams(chatid, parentID, msg.Event, emoji)
+	if err != nil {
+		return "", err
+	}
+	if _, err := b.c.MakeRequest("setMessageReaction", params); err != nil {
+		b.Log.Warnf("setMessageReaction failed (chat=%d parent=%d): %s", chatid, parentID, err)
+	}
+	return "", nil
+}
+
+// setMessageReactionParams builds the setMessageReaction request. A nil/absent
+// reaction array (EventReactionRemove) clears the bot's reaction per Bot API.
+func setMessageReactionParams(chatid int64, parentID int, event, emoji string) (tgbotapi.Params, error) {
+	params := tgbotapi.Params{}
+	params.AddNonZero64("chat_id", chatid)
+	params.AddNonZero("message_id", parentID)
+	if event == config.EventReactionAdd {
+		if err := params.AddInterface("reaction", []map[string]string{{"type": "emoji", "emoji": emoji}}); err != nil {
+			return nil, err
+		}
+	}
+	return params, nil
 }
 
 func (b *Btelegram) cacheAvatar(msg *config.Message) (string, error) {

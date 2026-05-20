@@ -28,6 +28,8 @@ const (
 	EventUserTyping        = "user_typing"
 	EventGetChannelMembers = "get_channel_members"
 	EventNoticeIRC         = "notice_irc"
+	EventReactionAdd       = "reaction_add"
+	EventReactionRemove    = "reaction_remove"
 )
 
 const ParentIDNotFound = "msg-parent-not-found"
@@ -48,7 +50,11 @@ type Message struct {
 	SourceID       string    `json:"source_id,omitempty"`
 	ParentUsername string    `json:"parent_username,omitempty"`
 	ParentText     string    `json:"parent_text,omitempty"`
-	Extra          map[string][]interface{}
+	// Emoji is set only on EventReactionAdd/EventReactionRemove; Text mirrors
+	// it for consumers that don't read the structured field. omitempty keeps
+	// the wire byte-identical for every non-reaction message.
+	Emoji string `json:"emoji,omitempty"`
+	Extra map[string][]interface{}
 }
 
 func (m Message) ParentNotFound() bool {
@@ -57,6 +63,19 @@ func (m Message) ParentNotFound() bool {
 
 func (m Message) ParentValid() bool {
 	return m.ParentID != "" && !m.ParentNotFound()
+}
+
+func (m Message) IsReaction() bool {
+	return m.Event == EventReactionAdd || m.Event == EventReactionRemove
+}
+
+// ReactionEmoji returns the reaction emoji, preferring the structured Emoji
+// field and falling back to Text for producers that only set the latter.
+func (m Message) ReactionEmoji() string {
+	if m.Emoji != "" {
+		return m.Emoji
+	}
+	return m.Text
 }
 
 type FileInfo struct {
@@ -144,6 +163,9 @@ type Protocol struct {
 	QuoteDisable           bool       // telegram
 	QuoteFormat            string     // telegram
 	QuoteLengthLimit       int        // telegram
+	ReactionFallbackFormat string     // all protocols, Go template for ReactionFallbackText
+	ReactionFallbackText   bool       // all protocols, relay reactions as a plaintext line where native reactions are impossible
+	Reactions              bool       // all protocols, default true; relay emoji reactions across bridges
 	RealName               string     // IRC
 	RejoinDelay            int        // IRC
 	ReplaceMessages        [][]string // all protocols

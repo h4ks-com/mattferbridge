@@ -157,6 +157,77 @@ const (
 	slackTestAccount = "slack.zzz"
 )
 
+var testconfigReactions = []byte(`
+[discord.test]
+server=""
+[discord.noreact]
+server=""
+Reactions=false
+
+[[gateway]]
+    name = "bridge1"
+    enable=true
+
+    [[gateway.inout]]
+    account = "discord.test"
+    channel = "general"
+
+    [[gateway.inout]]
+    account = "discord.noreact"
+    channel = "general"
+`)
+
+func TestRenderReactionFallback(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  config.Message
+		want string
+	}{
+		{"add with emoji", config.Message{Username: "bob", Emoji: "👍", Event: config.EventReactionAdd}, "bob reacted with 👍"},
+		{"add emoji from text", config.Message{Username: "bob", Text: "🔥", Event: config.EventReactionAdd}, "bob reacted with 🔥"},
+		{"remove", config.Message{Username: "alice", Emoji: "❤️", Event: config.EventReactionRemove}, "alice removed reaction ❤️"},
+		{"no username", config.Message{Emoji: "👍", Event: config.EventReactionAdd}, "someone reacted with 👍"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := tc.msg
+			if got := renderReactionFallback(&m); got != tc.want {
+				t.Fatalf("renderReactionFallback = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReactionCapableProtocols(t *testing.T) {
+	for _, p := range []string{"irc", "discord", "telegram", "api"} {
+		if _, ok := bridgemap.ReactionSupport[p]; !ok {
+			t.Fatalf("%s should be reaction-capable", p)
+		}
+	}
+	for _, p := range []string{"mattermost", "slack", "matrix", "xmpp"} {
+		if _, ok := bridgemap.ReactionSupport[p]; ok {
+			t.Fatalf("%s must not be reaction-capable (no native Send path)", p)
+		}
+	}
+}
+
+func TestIgnoreEventReactions(t *testing.T) {
+	r := maketestRouter(testconfigReactions)
+	gw := r.Gateways["bridge1"]
+	for _, br := range gw.Bridges {
+		switch br.Account {
+		case "discord.test":
+			// default (unset) relays reactions
+			assert.False(t, gw.ignoreEvent(config.EventReactionAdd, br))
+			assert.False(t, gw.ignoreEvent(config.EventReactionRemove, br))
+		case "discord.noreact":
+			// Reactions=false opts out
+			assert.True(t, gw.ignoreEvent(config.EventReactionAdd, br))
+			assert.True(t, gw.ignoreEvent(config.EventReactionRemove, br))
+		}
+	}
+}
+
 func maketestRouter(input []byte) *Router {
 	logger := logrus.New()
 	logger.SetOutput(ioutil.Discard)
@@ -424,6 +495,14 @@ func (s *ignoreTestSuite) TestIgnoreTextEmpty() {
 		"empty": {
 			input:  &config.Message{},
 			output: true,
+		},
+		"reaction add empty emoji": {
+			input:  &config.Message{Event: config.EventReactionAdd},
+			output: false,
+		},
+		"reaction remove empty emoji": {
+			input:  &config.Message{Event: config.EventReactionRemove},
+			output: false,
 		},
 	}
 	for testname, testcase := range msgTests {

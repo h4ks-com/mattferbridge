@@ -9,4 +9,5 @@ import (
 func init() {
 	FullMap["discord"] = bdiscord.New
 	UserTypingSupport["discord"] = struct{}{}
+	ReactionSupport["discord"] = struct{}{}
 }

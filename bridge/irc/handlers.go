@@ -172,8 +172,10 @@ func (b *Birc) handleNewConnection(client *girc.Client, event girc.Event) {
 	i.Handlers.Clear("INVITE")
 
 	i.Handlers.Clear("BATCH")
+	i.Handlers.Clear("TAGMSG")
 	i.Handlers.AddBg("PRIVMSG", b.handlePrivMsg)
 	i.Handlers.AddBg("BATCH", b.handleBatch)
+	i.Handlers.AddBg("TAGMSG", b.handleTagMsg)
 	i.Handlers.Add(girc.RPL_TOPICWHOTIME, b.handleTopicWhoTime)
 	i.Handlers.AddBg(girc.NOTICE, b.handleNotice)
 	i.Handlers.AddBg("JOIN", b.handleJoinPart)
@@ -467,6 +469,65 @@ func (b *Birc) flushMultilineBatch(mb *multilineBatch) {
 		b.requestAvatarOnce(mb.source)
 	}
 	b.Log.Debugf("<= Sending multiline batch (%d parts) from %s on %s to gateway", len(mb.parts), mb.source, mb.target)
+	b.Remote <- rmsg
+}
+
+// reactionParentID returns the reacted-to message id from a TAGMSG, preferring
+// +reply and falling back to +draft/reply.
+func reactionParentID(event girc.Event) string {
+	if v, ok := event.Tags.Get("+reply"); ok {
+		return v
+	}
+	if v, ok := event.Tags.Get("+draft/reply"); ok {
+		return v
+	}
+	return ""
+}
+
+// handleTagMsg turns an IRCv3 +draft/react / +draft/unreact TAGMSG into a
+// reaction event. Requires message-tags (which also gates outbound) and a
+// parent reference; anything else is ignored.
+func (b *Birc) handleTagMsg(client *girc.Client, event girc.Event) {
+	if !b.supportsReplyTags() {
+		return
+	}
+	if event.Source == nil || event.Source.Name == b.Nick {
+		return
+	}
+	if len(event.Params) == 0 {
+		return
+	}
+	parent := reactionParentID(event)
+	if parent == "" {
+		return
+	}
+	channel := strings.ToLower(event.Params[0])
+	if emoji, ok := event.Tags.Get("+draft/react"); ok {
+		b.emitReaction(event, channel, parent, emoji, config.EventReactionAdd)
+		return
+	}
+	if emoji, ok := event.Tags.Get("+draft/unreact"); ok {
+		b.emitReaction(event, channel, parent, emoji, config.EventReactionRemove)
+	}
+}
+
+func (b *Birc) emitReaction(event girc.Event, channel, parent, emoji, eventType string) {
+	if emoji == "" {
+		return
+	}
+	b.requestAvatarOnce(event.Source.Name)
+	rmsg := config.Message{
+		Username: event.Source.Name,
+		Channel:  channel,
+		Account:  b.Account,
+		UserID:   event.Source.Ident + "@" + event.Source.Host,
+		Avatar:   b.avatarURLFor(event.Source.Name),
+		Event:    eventType,
+		ParentID: parent,
+		Text:     emoji,
+		Emoji:    emoji,
+	}
+	b.Log.Debugf("<= Sending reaction %q (%s) from %s to gateway", emoji, eventType, b.Account)
 	b.Remote <- rmsg
 }
 

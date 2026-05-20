@@ -8,4 +8,5 @@ import (
 
 func init() {
 	FullMap["api"] = api.New
+	ReactionSupport["api"] = struct{}{}
 }

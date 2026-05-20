@@ -186,6 +186,11 @@ func (gw *Gateway) ignoreEvent(event string, dest *bridge.Bridge) bool {
 		if !dest.GetBool("ShowTopicChange") && !dest.GetBool("SyncTopic") {
 			return true
 		}
+	case config.EventReactionAdd, config.EventReactionRemove:
+		// reactions relay by default; a destination opts out with Reactions=false
+		if !dest.GetBoolDefaultTrue("Reactions") {
+			return true
+		}
 	}
 	return false
 }

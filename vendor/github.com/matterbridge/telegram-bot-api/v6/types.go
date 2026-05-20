@@ -114,6 +114,55 @@ type Update struct {
 	//
 	// optional
 	ChatJoinRequest *ChatJoinRequest `json:"chat_join_request,omitempty"`
+	// MessageReaction is a reaction to a message that was changed by a user.
+	// The bot must be an administrator in the chat and must explicitly specify
+	// "message_reaction" in the list of allowed_updates to receive these
+	// updates. The update isn't received for reactions set by bots. (Bot API 7.0)
+	//
+	// optional
+	MessageReaction *MessageReactionUpdated `json:"message_reaction,omitempty"`
+}
+
+// ReactionType describes the type of a reaction. Currently "emoji" and
+// "custom_emoji" are supported. (Bot API 7.0)
+type ReactionType struct {
+	// Type of the reaction, either "emoji" or "custom_emoji".
+	Type string `json:"type"`
+	// Emoji is the reaction emoji, set when Type is "emoji".
+	//
+	// optional
+	Emoji string `json:"emoji,omitempty"`
+	// CustomEmojiID is the custom emoji identifier, set when Type is
+	// "custom_emoji".
+	//
+	// optional
+	CustomEmojiID string `json:"custom_emoji_id,omitempty"`
+}
+
+// MessageReactionUpdated represents a change of a reaction on a message
+// performed by a user. (Bot API 7.0)
+type MessageReactionUpdated struct {
+	// Chat containing the message the user reacted to.
+	Chat Chat `json:"chat"`
+	// MessageID is the unique identifier of the message inside the chat.
+	MessageID int `json:"message_id"`
+	// User that changed the reaction, if the user isn't anonymous.
+	//
+	// optional
+	User *User `json:"user,omitempty"`
+	// ActorChat is the chat on behalf of which the reaction was changed, if
+	// the user is anonymous.
+	//
+	// optional
+	ActorChat *Chat `json:"actor_chat,omitempty"`
+	// Date of the change in Unix time.
+	Date int `json:"date"`
+	// OldReaction is the previous list of reaction types that were set by the
+	// user.
+	OldReaction []ReactionType `json:"old_reaction"`
+	// NewReaction is the new list of reaction types that have been set by the
+	// user.
+	NewReaction []ReactionType `json:"new_reaction"`
 }
 
 // SentFrom returns the user who sent an update. Can be nil, if Telegram did not provide information

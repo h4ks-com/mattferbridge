@@ -102,6 +102,18 @@ func (b *Bridge) GetBool(key string) bool {
 	return val
 }
 
+// GetBoolDefaultTrue behaves like GetBool but returns true when the key is
+// unset anywhere, for options that should be opt-out rather than opt-in.
+func (b *Bridge) GetBoolDefaultTrue(key string) bool {
+	if val, ok := b.Config.GetBool(b.GetConfigKey(key)); ok {
+		return val
+	}
+	if val, ok := b.Config.GetBool("general." + key); ok {
+		return val
+	}
+	return true
+}
+
 func (b *Bridge) GetInt(key string) int {
 	val, ok := b.Config.GetInt(b.GetConfigKey(key))
 	if !ok {

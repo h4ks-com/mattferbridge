@@ -10,6 +10,7 @@ import (
 
 	"github.com/42wim/matterbridge/bridge"
 	"github.com/42wim/matterbridge/bridge/config"
+	"github.com/42wim/matterbridge/gateway/bridgemap"
 	"github.com/42wim/matterbridge/internal"
 	"github.com/d5/tengo/v2"
 	"github.com/d5/tengo/v2/stdlib"
@@ -51,6 +52,24 @@ const (
 )
 
 const defaultQuoteFormat = "{MESSAGE} (re @{QUOTENICK}: {QUOTEMESSAGE})"
+
+// renderReactionFallback turns a reaction event into a human-readable line for
+// destinations that can't react natively.
+func renderReactionFallback(msg *config.Message) string {
+	emoji := msg.Emoji
+	if emoji == "" {
+		emoji = msg.Text
+	}
+	verb := "reacted with"
+	if msg.Event == config.EventReactionRemove {
+		verb = "removed reaction"
+	}
+	name := strings.TrimSpace(msg.Username)
+	if name == "" {
+		name = "someone"
+	}
+	return fmt.Sprintf("%s %s %s", name, verb, emoji)
+}
 
 // sourceEmbedsQuote reports whether the source bridge already embedded the reply
 // quote into rmsg.Text. Adding our fallback on top would double-quote.
@@ -339,6 +358,10 @@ func (gw *Gateway) ignoreTextEmpty(msg *config.Message) bool {
 	if msg.Event == config.EventUserTyping {
 		return false
 	}
+	// reaction removals can legitimately carry no emoji (clear-all semantics)
+	if msg.Event == config.EventReactionAdd || msg.Event == config.EventReactionRemove {
+		return false
+	}
 	// we have an attachment or actual bytes, do not ignore
 	if msg.Extra != nil &&
 		(msg.Extra["attachments"] != nil ||
@@ -557,6 +580,24 @@ func (gw *Gateway) SendMessage(
 	// this means that we didn't find it in the cache so set it to a "msg-parent-not-found" constant
 	if msg.ParentID == "" && rmsg.ParentID != "" {
 		msg.ParentID = config.ParentIDNotFound
+	}
+
+	// A reaction without a resolvable parent has nothing to attach to, so drop
+	// it instead of forwarding an orphan the destination can't apply.
+	if msg.Event == config.EventReactionAdd || msg.Event == config.EventReactionRemove {
+		if msg.ParentID == "" || msg.ParentID == config.ParentIDNotFound {
+			return "", nil
+		}
+		// Destinations without native reaction support either render a
+		// plaintext fallback line or drop, so emoji never leak as bare text.
+		if _, ok := bridgemap.ReactionSupport[dest.Protocol]; !ok {
+			if !dest.GetBool("ReactionFallbackText") {
+				return "", nil
+			}
+			msg.Text = renderReactionFallback(&msg)
+			msg.Emoji = ""
+			msg.Event = ""
+		}
 	}
 
 	if canonicalParentMsgID != "" && !dest.GetBool("PreserveThreading") && !gw.sourceEmbedsQuote(rmsg) {

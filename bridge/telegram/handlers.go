@@ -189,6 +189,11 @@ func (b *Btelegram) handleRecv(updates <-chan tgbotapi.Update) {
 	for update := range updates {
 		b.Log.Debugf("== Receiving event: %#v", update.Message)
 
+		if update.MessageReaction != nil {
+			b.handleMessageReaction(update.MessageReaction)
+			continue
+		}
+
 		if update.Message == nil && update.ChannelPost == nil &&
 			update.EditedMessage == nil && update.EditedChannelPost == nil {
 			b.Log.Info("Received event without messages, skipping.")
@@ -643,4 +648,74 @@ func (b *Btelegram) handleEntities(rmsg *config.Message, message *tgbotapi.Messa
 			indexMovedBy += 2
 		}
 	}
+}
+
+// handleMessageReaction turns a Telegram message_reaction update into reaction
+// events. A bot only ever sees one user's reaction set at a time; we diff the
+// old and new sets to derive adds and removes. Anonymous (channel) reactions
+// carry no User and are ignored, as are our own.
+func (b *Btelegram) handleMessageReaction(m *tgbotapi.MessageReactionUpdated) {
+	if m.User == nil || m.User.ID == b.c.Self.ID {
+		return
+	}
+	added, removed := diffReactions(m.OldReaction, m.NewReaction)
+	base := config.Message{
+		Account:  b.Account,
+		Channel:  strconv.FormatInt(m.Chat.ID, 10),
+		UserID:   strconv.FormatInt(m.User.ID, 10),
+		Username: reactionUsername(m.User),
+		ParentID: strconv.Itoa(m.MessageID),
+	}
+	for _, emoji := range added {
+		b.emitReaction(base, emoji, config.EventReactionAdd)
+	}
+	for _, emoji := range removed {
+		b.emitReaction(base, emoji, config.EventReactionRemove)
+	}
+}
+
+func (b *Btelegram) emitReaction(base config.Message, emoji, event string) {
+	rmsg := base
+	rmsg.Event = event
+	rmsg.Text = emoji
+	rmsg.Emoji = emoji
+	b.Log.Debugf("<= Sending reaction %q (%s) from %s to gateway", emoji, event, b.Account)
+	b.Remote <- rmsg
+}
+
+func reactionUsername(u *tgbotapi.User) string {
+	if u.UserName != "" {
+		return u.UserName
+	}
+	return strings.TrimSpace(u.FirstName + " " + u.LastName)
+}
+
+// diffReactions reports which reaction emoji were added and removed between the
+// old and new reaction sets. Only ReactionTypeEmoji entries are considered;
+// custom emoji have no cross-protocol textual form.
+func diffReactions(old, updated []tgbotapi.ReactionType) ([]string, []string) {
+	oldSet := reactionEmojiSet(old)
+	newSet := reactionEmojiSet(updated)
+	var added, removed []string
+	for emoji := range newSet {
+		if !oldSet[emoji] {
+			added = append(added, emoji)
+		}
+	}
+	for emoji := range oldSet {
+		if !newSet[emoji] {
+			removed = append(removed, emoji)
+		}
+	}
+	return added, removed
+}
+
+func reactionEmojiSet(rs []tgbotapi.ReactionType) map[string]bool {
+	set := make(map[string]bool, len(rs))
+	for _, r := range rs {
+		if r.Type == "emoji" && r.Emoji != "" {
+			set[r.Emoji] = true
+		}
+	}
+	return set
 }

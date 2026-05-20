@@ -178,6 +178,20 @@ func (b *Birc) Send(msg config.Message) (string, error) {
 		return "", nil
 	}
 
+	// Reactions ride the throttled queue as a raw TAGMSG; skip the message
+	// splitting/charset path that doesn't apply to a single emoji tag.
+	if msg.IsReaction() {
+		if !b.supportsReplyTags() || !msg.ParentValid() || msg.ReactionEmoji() == "" {
+			return "", nil
+		}
+		if len(b.Local) >= b.MessageQueue {
+			b.Log.Debugf("flooding, dropping reaction (queue at %d)", len(b.Local))
+			return "", nil
+		}
+		b.Local <- localMsg{msg: msg, resultCh: make(chan string, 1)}
+		return "", nil
+	}
+
 	// Execute a command
 	if strings.HasPrefix(msg.Text, "!") {
 		b.Command(&msg)
@@ -250,6 +264,31 @@ func (b *Birc) doConnect() {
 	}
 }
 
+// ircTagValueEscaper applies IRCv3 message-tag value escaping so a reaction
+// value carrying `;`, space, or CR/LF can't break out and forge extra tags
+// when re-emitted. Per https://ircv3.net/specs/extensions/message-tags.html
+var ircTagValueEscaper = strings.NewReplacer(
+	"\\", "\\\\",
+	";", "\\:",
+	" ", "\\s",
+	"\r", "\\r",
+	"\n", "\\n",
+)
+
+// formatReactionTagMsg builds an IRCv3 react/unreact TAGMSG line. It carries
+// both +reply and +draft/reply so servers/clients that only know one of the
+// two still resolve the parent, mirroring our outbound reply handling.
+// Per https://ircv3.net/specs/client-tags/react.html
+func formatReactionTagMsg(event, emoji, parentID, channel string) string {
+	tag := "+draft/react"
+	if event == config.EventReactionRemove {
+		tag = "+draft/unreact"
+	}
+	emoji = ircTagValueEscaper.Replace(emoji)
+	parentID = ircTagValueEscaper.Replace(parentID)
+	return fmt.Sprintf("@%s=%s;+reply=%s;+draft/reply=%s TAGMSG %s", tag, emoji, parentID, parentID, channel)
+}
+
 // Sanitize nicks for RELAYMSG: replace IRC characters with special meanings with "-"
 func sanitizeNick(nick string) string {
 	sanitize := func(r rune) rune {
@@ -277,6 +316,17 @@ func (b *Birc) doSend() {
 		select {
 		case <-b.echoMsgid:
 		default:
+		}
+
+		// Reactions are emitted as a single TAGMSG and aren't themselves
+		// reactable, so skip the echo-msgid round-trip the other branches use.
+		if msg.IsReaction() {
+			b.i.Cmd.SendRaw(formatReactionTagMsg(msg.Event, msg.ReactionEmoji(), msg.ParentID, msg.Channel)) //nolint:errcheck
+			select {
+			case lm.resultCh <- "":
+			default:
+			}
+			continue
 		}
 
 		useReplyTag := msg.ParentValid() && b.GetBool("PreserveThreading") && b.supportsReplyTags()

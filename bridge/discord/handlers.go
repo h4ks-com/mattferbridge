@@ -44,6 +44,79 @@ func (b *Bdiscord) messageEvent(s *discordgo.Session, m *discordgo.Event) {
 	b.Log.Debug(spew.Sdump(m.Struct))
 }
 
+func (b *Bdiscord) messageReactionAdd(s *discordgo.Session, m *discordgo.MessageReactionAdd) {
+	b.handleReaction(m.MessageReaction, m.Member, config.EventReactionAdd)
+}
+
+func (b *Bdiscord) messageReactionRemove(s *discordgo.Session, m *discordgo.MessageReactionRemove) {
+	b.handleReaction(m.MessageReaction, nil, config.EventReactionRemove)
+}
+
+func (b *Bdiscord) handleReaction(r *discordgo.MessageReaction, member *discordgo.Member, event string) {
+	if r.GuildID != b.guildID {
+		return
+	}
+	// Drop the bot's own reactions; we emit those in response to a cross-platform react.
+	if r.UserID == b.userID {
+		return
+	}
+
+	emoji := discordReactionEmoji(r.Emoji)
+	if emoji == "" {
+		return
+	}
+
+	username := ""
+	if member != nil && member.User != nil {
+		username = b.getNick(member.User, b.guildID)
+	} else if u, err := b.c.User(r.UserID); err == nil {
+		username = b.getNick(u, b.guildID)
+	}
+
+	rmsg := config.Message{
+		Account:  b.Account,
+		Channel:  b.getChannelName(r.ChannelID),
+		UserID:   r.UserID,
+		Username: username,
+		Event:    event,
+		ParentID: r.MessageID,
+		Text:     emoji,
+		Emoji:    emoji,
+	}
+	b.Log.Debugf("<= Sending reaction %q (%s) from %s to gateway", emoji, event, b.Account)
+	b.Remote <- rmsg
+}
+
+// discordReactionEmoji renders a reaction emoji for cross-protocol transport:
+// the raw unicode for standard emoji, name:id for custom ones so a Discord
+// destination can re-add them natively.
+func discordReactionEmoji(e discordgo.Emoji) string {
+	if e.ID != "" {
+		return e.Name + ":" + e.ID
+	}
+	return e.Name
+}
+
+func (b *Bdiscord) handleReactionSend(msg *config.Message, channelID string) (string, error) {
+	if !msg.ParentValid() {
+		return "", nil
+	}
+	emoji := msg.ReactionEmoji()
+	if emoji == "" {
+		return "", nil
+	}
+	if msg.Event == config.EventReactionAdd {
+		if err := b.c.MessageReactionAdd(channelID, msg.ParentID, emoji); err != nil {
+			b.Log.Warnf("MessageReactionAdd failed (emoji=%q parent=%q): %s", emoji, msg.ParentID, err)
+		}
+		return "", nil
+	}
+	if err := b.c.MessageReactionRemove(channelID, msg.ParentID, emoji, "@me"); err != nil {
+		b.Log.Warnf("MessageReactionRemove failed (emoji=%q parent=%q): %s", emoji, msg.ParentID, err)
+	}
+	return "", nil
+}
+
 func (b *Bdiscord) messageTyping(s *discordgo.Session, m *discordgo.TypingStart) {
 	if m.GuildID != b.guildID {
 		b.Log.Debugf("Ignoring messageTyping because it originates from a different guild")
