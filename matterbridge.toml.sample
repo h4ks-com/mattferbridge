@@ -138,6 +138,13 @@ PingDelay="1m"
 #OPTIONAL (default false)
 StripMarkdown=false
 
+#AvatarRefreshInterval controls how often avatars discovered via IRCv3
+#draft/metadata-2 are re-uploaded to MediaServerUpload. Rehosted files expire
+#after the media server's TTL, after which the cached URL 404s and Discord drops
+#the webhook avatar. Set this below your media server's file TTL. "0" disables.
+#OPTIONAL (default "6h")
+AvatarRefreshInterval="6h"
+
 #Nicks you want to ignore.
 #Regular expressions supported
 #Messages from those users will not be sent to other bridges.

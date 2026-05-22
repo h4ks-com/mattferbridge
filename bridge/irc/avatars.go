@@ -19,6 +19,16 @@ var imageMagicPrefixes = [][]byte{
 
 const avatarKey = "avatar"
 
+// avatarOriginalPrefix namespaces the hidden avatarMap entries that hold a
+// nick's upstream avatar URL, kept alongside the bare-nick entries that hold
+// the rehosted MediaServer URL.
+const avatarOriginalPrefix = ":url:"
+
+// defaultAvatarRefreshInterval is used when AvatarRefreshInterval is unset. It
+// must stay below the MediaServer's file TTL so a rehosted avatar is replaced
+// before it expires; tune AvatarRefreshInterval down if the TTL is shorter.
+const defaultAvatarRefreshInterval = 6 * time.Hour
+
 // IRC avatars use the IRCv3 draft/metadata-2 capability: clients SET an
 // `avatar` key with a URL, the server pushes that key to subscribers and
 // replies to GETs. We rehost the URL on the configured MediaServerUpload so
@@ -81,7 +91,7 @@ func (b *Birc) processAvatarMetadata(nick, url string) {
 		return
 	}
 	// Reserve before spawn so the connect-time METADATA SUB burst doesn't fan out.
-	b.avatarMap[":url:"+nick] = url
+	b.avatarMap[avatarOriginalPrefix+nick] = url
 	b.avatarMu.Unlock()
 
 	go b.downloadAndUploadAvatar(nick, url)
@@ -94,7 +104,7 @@ func isAbsoluteHTTPURL(url string) bool {
 // Hidden key alongside the sha mapping; lets us detect URL changes and skip
 // re-downloading when the user republishes the same URL.
 func (b *Birc) avatarOriginal(nick string) (string, bool) {
-	url, ok := b.avatarMap[":url:"+nick]
+	url, ok := b.avatarMap[avatarOriginalPrefix+nick]
 	return url, ok
 }
 
@@ -203,4 +213,70 @@ func (b *Birc) anyJoinedChannel() string {
 		return ch
 	}
 	return ""
+}
+
+// parseAvatarRefreshInterval reads the configured refresh cadence. An empty
+// value falls back to the default; an explicit non-positive duration ("0",
+// "-1s") disables refreshing.
+func parseAvatarRefreshInterval(raw string) (time.Duration, error) {
+	if raw == "" {
+		return defaultAvatarRefreshInterval, nil
+	}
+	return time.ParseDuration(raw)
+}
+
+// avatarRefreshLoop periodically re-hosts known avatars until stop is closed.
+// One loop runs per connection; Disconnect closes stop so the gateway's
+// reconnect path (Disconnect then Connect) doesn't leak loops.
+func (b *Birc) avatarRefreshLoop(stop <-chan struct{}) {
+	interval, err := parseAvatarRefreshInterval(b.GetString("AvatarRefreshInterval"))
+	if err != nil {
+		b.Log.Errorf("invalid AvatarRefreshInterval, avatar refresh disabled: %s", err)
+		return
+	}
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			b.refreshAvatars()
+		}
+	}
+}
+
+// refreshAvatars re-uploads every known avatar to the MediaServer. Rehosted
+// files expire after a TTL, leaving avatarMap pointing at a URL that 404s; once
+// that happens Discord's webhook avatar proxy can no longer fetch the image and
+// drops it from every message at once. Re-hosting on a cadence shorter than the
+// TTL keeps a live URL in avatarMap for current messages.
+func (b *Birc) refreshAvatars() {
+	if b.General.MediaServerUpload == "" || !b.i.IsConnected() {
+		return
+	}
+	for nick, url := range b.avatarsToRefresh() {
+		b.Log.Debugf("Refreshing avatar for %s", nick)
+		go b.downloadAndUploadAvatar(nick, url)
+	}
+}
+
+// avatarsToRefresh snapshots nick -> upstream source URL for every rehosted
+// avatar. Only the hidden avatarOriginalPrefix entries carry the upstream URL;
+// the bare-nick entries hold the expiring rehosted URL and are skipped.
+func (b *Birc) avatarsToRefresh() map[string]string {
+	b.avatarMu.Lock()
+	defer b.avatarMu.Unlock()
+	pending := make(map[string]string)
+	for k, v := range b.avatarMap {
+		nick, ok := strings.CutPrefix(k, avatarOriginalPrefix)
+		if !ok {
+			continue
+		}
+		pending[nick] = v
+	}
+	return pending
 }

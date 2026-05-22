@@ -50,6 +50,10 @@ type Birc struct {
 	// they relay to other bridges as a single message instead of N lines.
 	multiline *batchManager
 
+	// refreshStop terminates avatarRefreshLoop on Disconnect. Recreated each
+	// Connect so the gateway's reconnect path doesn't accumulate stale loops.
+	refreshStop chan struct{}
+
 	*bridge.Config
 }
 
@@ -132,11 +136,17 @@ func (b *Birc) Connect() error {
 	b.Log.Info("Connection succeeded")
 	b.FirstConnection = false
 	go b.doSend()
+	b.refreshStop = make(chan struct{})
+	go b.avatarRefreshLoop(b.refreshStop)
 	return nil
 }
 
 func (b *Birc) Disconnect() error {
 	b.i.Close()
+	if b.refreshStop != nil {
+		close(b.refreshStop)
+		b.refreshStop = nil
+	}
 	close(b.Local)
 	return nil
 }
