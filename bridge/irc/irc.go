@@ -473,6 +473,10 @@ func (b *Birc) getClient() (*girc.Client, error) {
 			"draft/metadata-2":               nil,
 			"batch":                          nil,
 			"draft/multiline":                nil,
+			// Negotiated so the server skips +H on-join history replay for
+			// the bridge; otherwise that backlog gets relayed out to every
+			// other network as a flood on each (re)connect.
+			"draft/chathistory": nil,
 		},
 	})
 	return i, nil
