@@ -286,7 +286,18 @@ func (b *Bdiscord) Send(msg config.Message) (string, error) {
 	// Always use webhook when available; replies get a URL-unfurl card instead
 	// of native reply (Discord webhooks can't set message_reference).
 	useWebhooks := b.shouldMessageUseWebhooks(&msg)
-	if useWebhooks && msg.Event != config.EventMsgDelete {
+	if useWebhooks && msg.Event == config.EventMsgDelete {
+		if msg.ID == "" {
+			return "", nil
+		}
+		for _, partID := range strings.Split(msg.ID, ";") {
+			if err := b.transmitter.Delete(channelID, partID); err != nil {
+				return "", err
+			}
+		}
+		return "", nil
+	}
+	if useWebhooks {
 		return b.handleEventWebhook(&msg, channelID)
 	}
 

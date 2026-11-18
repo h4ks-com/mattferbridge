@@ -94,6 +94,15 @@ func (t *Transmitter) Edit(channelID string, messageID string, params *discordgo
 	return nil
 }
 
+// Delete removes a message the channel's webhook posted.
+func (t *Transmitter) Delete(channelID string, messageID string) error {
+	wh := t.getWebhook(channelID)
+	if wh == nil {
+		return ErrWebhookNotFound
+	}
+	return t.session.WebhookMessageDelete(wh.ID, wh.Token, messageID)
+}
+
 // HasWebhook checks whether the transmitter is using a particular webhook.
 func (t *Transmitter) HasWebhook(id string) bool {
 	t.mutex.RLock()
