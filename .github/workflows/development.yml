@@ -16,6 +16,7 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: v1.64.8
+          verify: false
           args: "-v --new-from-rev HEAD~5 --timeout=5m"
   # test-build-upload:
   #   strategy:
