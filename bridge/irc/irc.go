@@ -170,11 +170,6 @@ func (b *Birc) JoinChannel(channel config.ChannelInfo) error {
 }
 
 func (b *Birc) Send(msg config.Message) (string, error) {
-	// ignore delete messages
-	if msg.Event == config.EventMsgDelete {
-		return "", nil
-	}
-
 	// Loopback from gateway after re-hosting an avatar via MediaServerUpload.
 	if msg.Event == config.EventAvatarDownload {
 		return b.cacheAvatar(&msg)
@@ -199,6 +194,13 @@ func (b *Birc) Send(msg config.Message) (string, error) {
 			return "", nil
 		}
 		b.Local <- localMsg{msg: msg, resultCh: make(chan string, 1)}
+		return "", nil
+	}
+
+	if msg.Event == config.EventMsgDelete {
+		if b.i.HasCapability("draft/message-redaction") {
+			b.queueRedaction(msg)
+		}
 		return "", nil
 	}
 
@@ -250,6 +252,17 @@ func (b *Birc) Send(msg config.Message) (string, error) {
 		}
 	}
 	return lastMsgid, nil
+}
+
+func (b *Birc) queueRedaction(msg config.Message) {
+	if msg.ID == "" {
+		return
+	}
+	if len(b.Local) >= b.MessageQueue {
+		b.Log.Debugf("flooding, dropping redaction (queue at %d)", len(b.Local))
+		return
+	}
+	b.Local <- localMsg{msg: msg, resultCh: make(chan string, 1)}
 }
 
 func (b *Birc) doConnect() {
@@ -336,6 +349,11 @@ func (b *Birc) doSend() {
 			case lm.resultCh <- "":
 			default:
 			}
+			continue
+		}
+
+		if msg.Event == config.EventMsgDelete {
+			b.i.Cmd.SendRawf("REDACT %s %s", msg.Channel, msg.ID) //nolint:errcheck
 			continue
 		}
 
@@ -473,6 +491,7 @@ func (b *Birc) getClient() (*girc.Client, error) {
 			"draft/metadata-2":               nil,
 			"batch":                          nil,
 			"draft/multiline":                nil,
+			"draft/message-redaction":        nil,
 			// Negotiated so the server skips +H on-join history replay for
 			// the bridge; otherwise that backlog gets relayed out to every
 			// other network as a flood on each (re)connect.

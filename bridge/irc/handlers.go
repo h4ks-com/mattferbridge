@@ -173,9 +173,11 @@ func (b *Birc) handleNewConnection(client *girc.Client, event girc.Event) {
 
 	i.Handlers.Clear("BATCH")
 	i.Handlers.Clear("TAGMSG")
+	i.Handlers.Clear("REDACT")
 	i.Handlers.AddBg("PRIVMSG", b.handlePrivMsg)
 	i.Handlers.AddBg("BATCH", b.handleBatch)
 	i.Handlers.AddBg("TAGMSG", b.handleTagMsg)
+	i.Handlers.AddBg("REDACT", b.handleRedact)
 	i.Handlers.Add(girc.RPL_TOPICWHOTIME, b.handleTopicWhoTime)
 	i.Handlers.AddBg(girc.NOTICE, b.handleNotice)
 	i.Handlers.AddBg("JOIN", b.handleJoinPart)
@@ -508,6 +510,25 @@ func (b *Birc) handleTagMsg(client *girc.Client, event girc.Event) {
 	}
 	if emoji, ok := event.Tags.Get("+draft/unreact"); ok {
 		b.emitReaction(event, channel, parent, emoji, config.EventReactionRemove)
+	}
+}
+
+func (b *Birc) handleRedact(client *girc.Client, event girc.Event) {
+	if event.Source == nil || event.Source.Name == b.Nick || len(event.Params) < 2 {
+		return
+	}
+	channel := event.Params[0]
+	if !girc.IsValidChannel(channel) {
+		return
+	}
+	b.Log.Debugf("<= Sending redaction of %s from %s to gateway", event.Params[1], b.Account)
+	b.Remote <- config.Message{
+		Username: event.Source.Name,
+		Channel:  strings.ToLower(channel),
+		Account:  b.Account,
+		ID:       event.Params[1],
+		Event:    config.EventMsgDelete,
+		Text:     config.EventMsgDelete,
 	}
 }
 
