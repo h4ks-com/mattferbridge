@@ -167,6 +167,7 @@ type Protocol struct {
 	ReactionFallbackText   bool       // all protocols, relay reactions as a plaintext line where native reactions are impossible
 	Reactions              bool       // all protocols, default true; relay emoji reactions across bridges
 	RealName               string     // IRC
+	RelayDeletes           bool       // api, send msg_delete events to API consumers
 	RejoinDelay            int        // IRC
 	ReplaceMessages        [][]string // all protocols
 	ReplaceNicks           [][]string // all protocols

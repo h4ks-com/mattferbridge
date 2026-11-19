@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	lru "github.com/hashicorp/golang-lru"
 	"github.com/olahol/melody"
 
 	"github.com/42wim/matterbridge/bridge"
@@ -24,6 +25,9 @@ type API struct {
 	sync.RWMutex
 	*bridge.Config
 	mrouter *melody.Melody
+	// postedIDs holds the ids this account issued, so a client can only
+	// delete messages posted through this account.
+	postedIDs *lru.Cache
 }
 
 type Message struct {
@@ -35,7 +39,7 @@ type Message struct {
 }
 
 func New(cfg *bridge.Config) bridge.Bridger {
-	b := &API{Config: cfg}
+	b := &API{Config: cfg, postedIDs: newPostedIDs()}
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = true
@@ -96,6 +100,11 @@ func New(cfg *bridge.Config) bridge.Bridger {
 	return b
 }
 
+func newPostedIDs() *lru.Cache {
+	cache, _ := lru.New(5000)
+	return cache
+}
+
 func (b *API) Connect() error {
 	return nil
 }
@@ -111,8 +120,7 @@ func (b *API) JoinChannel(channel config.ChannelInfo) error {
 func (b *API) Send(msg config.Message) (string, error) {
 	b.Lock()
 	defer b.Unlock()
-	// ignore delete messages
-	if msg.Event == config.EventMsgDelete {
+	if msg.Event == config.EventMsgDelete && !b.GetBool("RelayDeletes") {
 		return "", nil
 	}
 	b.Log.Debugf("enqueueing message from %s on ring buffer", msg.Username)
@@ -139,10 +147,22 @@ func (b *API) handlePostMessage(c echo.Context) error {
 	message.Channel = "api"
 	message.Protocol = "api"
 	message.Account = b.Account
-	// Assign a server-side id so the router caches under a stable key and
-	// consumers (e.g. matterdelta) can later reference this message via
-	// parent_id when one of their users quotes it.
-	message.ID = uuid.NewString()
+	// A delete names the id we returned when the client posted the original.
+	if message.Event == config.EventMsgDelete {
+		if message.ID == "" {
+			return echo.NewHTTPError(http.StatusBadRequest, "msg_delete needs an id")
+		}
+		if !b.postedIDs.Contains(message.ID) {
+			return echo.NewHTTPError(http.StatusNotFound, "msg_delete id was not posted through this account")
+		}
+		message.Text = config.EventMsgDelete
+	} else {
+		// Assign a server-side id so the router caches under a stable key and
+		// consumers (e.g. matterdelta) can later reference this message via
+		// parent_id when one of their users quotes it.
+		message.ID = uuid.NewString()
+		b.postedIDs.Add(message.ID, nil)
+	}
 	message.Timestamp = time.Now()
 
 	var (

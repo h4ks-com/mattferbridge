@@ -1688,6 +1688,11 @@ Label=""
 #See [general] config section for default options
 RemoteNickFormat="{NICK}"
 
+#Send msg_delete events to API consumers, with the deleted message in source_id.
+#Consumers delete a message they posted by POSTing {"event":"msg_delete","id":"<id the POST returned>"}
+#OPTIONAL (default false)
+RelayDeletes=false
+
 
 
 ###################################################################
